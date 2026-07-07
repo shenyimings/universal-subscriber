@@ -1,0 +1,6 @@
+.env
+config.yaml
+prompts.yaml
+data/
+__pycache__/
+.venv
