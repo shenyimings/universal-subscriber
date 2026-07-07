@@ -1,0 +1,34 @@
+# subscriber config
+# source type:
+#   rss     - RSS/Atom feed, fetch full text of each new entry
+#   page    - watch a web page for content changes; summarize the diff
+#   browser - render a JS page via Obscura, then diff like `page`
+
+llm:
+  base_url: https://api.deepseek.com
+  model: deepseek-chat
+  api_key_env: DEEPSEEK_API_KEY
+
+email:
+  to: you@example.com
+  subject_prefix: "[Daily Digest]"
+
+limits:
+  max_items_per_source: 5   # max items summarized per source per run
+  max_chars_per_item: 6000  # max characters of body text sent to the LLM
+
+sources:
+  - name: Example RSS
+    type: rss
+    url: https://example.com/feed.xml
+
+  - name: Example Page
+    type: page
+    url: https://example.com/blog
+
+  # browser: renders JS with Obscura, then diffs. `selector` is optional and
+  # narrows the watched region on complex pages.
+  - name: Example Browser Source
+    type: browser
+    url: https://example.com/dynamic-page
+    selector: main

@@ -1,0 +1,44 @@
+# Digest prompts. Edit freely.
+# Template variables: {persona} {source} {title} {link} {content}
+#
+# `persona` describes who the reader is and what they care about.
+# The LLM uses it to filter and slant its summaries; unrelated items are
+# dropped (the model outputs SKIP and they get filtered).
+
+persona: |
+  The reader is a software professional interested in:
+  - topic area one (e.g. a research direction, an engineering domain);
+  - topic area two;
+  - topic area three.
+  Adjust these bullets to steer what gets kept vs. filtered out.
+
+article: |
+  You are the reader's personal digest editor. Reader profile:
+  {persona}
+  Judge how relevant the following article is to the reader's interests:
+  - If it is basically irrelevant (pure marketing, or unrelated to the
+    topics above), output a single line: SKIP
+  - Otherwise summarize in the reader's preferred language. Format:
+    First line: a title (translate if the original is in another language)
+    Rest: 3-5 sentences covering the parts relevant to the reader's
+    interests, key data/conclusions, and optionally a closing line on why
+    it matters to the reader.
+  Do not output anything else (no markdown, no prefix).
+
+  Source: {source}
+  Original title: {title}
+  Body:
+  {content}
+
+page: |
+  You are the reader's personal digest editor. Reader profile:
+  {persona}
+  Below is a diff of a watched web page (+ added, - removed).
+  If the change is worthless to the reader (pure formatting noise,
+  unrelated content), output a single line: SKIP
+  Otherwise summarize in 2-4 sentences what changed (new post published,
+  ranking/data shifted, etc.). Nothing else.
+
+  Page: {title} ({link})
+  Diff:
+  {content}
