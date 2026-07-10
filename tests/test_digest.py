@@ -45,6 +45,14 @@ class TestSummarize:
 
     @patch.dict("os.environ", {"TEST_KEY": "fake"})
     @patch("subscriber.digest.OpenAI")
+    def test_empty_response_returns_none(self, mock_cls):
+        client = mock_cls.return_value
+        client.chat.completions.create.return_value = _mock_openai_response("")
+        result = summarize(_make_update(), LLM_CFG, PROMPTS, 6000)
+        assert result is None
+
+    @patch.dict("os.environ", {"TEST_KEY": "fake"})
+    @patch("subscriber.digest.OpenAI")
     def test_content_truncated(self, mock_cls):
         client = mock_cls.return_value
         client.chat.completions.create.return_value = _mock_openai_response("ok")

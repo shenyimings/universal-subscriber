@@ -36,8 +36,8 @@ def summarize(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
     )
-    text = resp.choices[0].message.content.strip()
-    if text.splitlines()[0].strip().upper().startswith("SKIP"):
+    text = (resp.choices[0].message.content or "").strip()
+    if not text or text.splitlines()[0].strip().upper().startswith("SKIP"):
         return None
     return text
 
