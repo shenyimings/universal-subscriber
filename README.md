@@ -1,5 +1,7 @@
 # subscriber
 
+![coverage](https://img.shields.io/badge/coverage-62%25-yellow)
+
 Watch information sources → have an LLM (DeepSeek) summarize and translate the updates → email you a daily digest.
 
 ## Usage
@@ -39,6 +41,19 @@ Configured via a systemd user timer (no cron on this box): `~/.config/systemd/us
 systemctl --user list-timers subscriber.timer   # next run time
 systemctl --user start subscriber.service       # trigger once manually
 systemctl --user disable --now subscriber.timer # stop
+```
+
+## Testing
+
+```bash
+uv run pytest                           # run all tests
+uv run pytest --cov --cov-report=term-missing  # with coverage report
+```
+
+Update the coverage badge in this README after significant changes:
+
+```bash
+uv run pytest --cov -q 2>&1 | grep TOTAL  # read the percentage, update the badge manually
 ```
 
 ## Known limitations
