@@ -50,11 +50,7 @@ uv run pytest                           # run all tests
 uv run pytest --cov --cov-report=term-missing  # with coverage report
 ```
 
-Update the coverage badge in this README after significant changes:
-
-```bash
-uv run pytest --cov -q 2>&1 | grep TOTAL  # read the percentage, update the badge manually
-```
+The coverage badge is updated automatically by CI on each push to main.
 
 ## Known limitations
 
