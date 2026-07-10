@@ -1,0 +1,38 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - run: uv sync --group dev
+
+      - run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Update coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          COV=$(uv run python -c "import xml.etree.ElementTree as ET; print(int(float(ET.parse('coverage.xml').getroot().get('line-rate')) * 100))")
+          if [ "$COV" -ge 80 ]; then COLOR="brightgreen";
+          elif [ "$COV" -ge 60 ]; then COLOR="yellow";
+          else COLOR="red"; fi
+          sed -i "s|coverage-[0-9]*%25-[a-z]*|coverage-${COV}%25-${COLOR}|" README.md
+
+      - name: Commit badge update
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          git diff --quiet README.md && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "chore: update coverage badge"
+          git push
