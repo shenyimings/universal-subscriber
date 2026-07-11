@@ -26,6 +26,12 @@ sources:
     type: page
     url: https://example.com/blog
 
+  # inbox: read received emails from an AgentMail inbox as a source.
+  # Short URL-only messages are auto-fetched and extracted.
+  - name: My Inbox
+    type: inbox
+    inbox_id: your-inbox@agentmail.to
+
   # browser: renders JS with Obscura, then diffs. `selector` is optional and
   # narrows the watched region on complex pages.
   - name: Example Browser Source

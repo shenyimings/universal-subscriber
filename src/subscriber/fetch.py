@@ -1,6 +1,8 @@
-"""Fetchers: rss (feed + article pages) and page (watch a URL for changes)."""
+"""Fetchers: rss, page, browser, inbox."""
 
 import difflib
+import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -112,9 +114,60 @@ def fetch_page(source: dict, state: State) -> list[Update]:
     ]
 
 
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _agentmail_client(api_key: str):
+    from agentmail import AgentMail
+    return AgentMail(api_key=api_key)
+
+
+def fetch_inbox(source: dict, state: State, max_items: int) -> list[Update]:
+    """Fetch unread received emails from an AgentMail inbox."""
+
+    name = source["name"]
+    api_key = os.environ.get(source.get("api_key_env", "AGENTMAIL_API_KEY"))
+    if not api_key:
+        raise RuntimeError(f"环境变量 {source.get('api_key_env')} 未设置")
+    client = _agentmail_client(api_key)
+    inbox_id = source["inbox_id"]
+
+    resp = client.inboxes.messages.list(inbox_id)
+    updates = []
+    for msg in resp.messages:
+        if "sent" in (msg.labels or []):
+            continue
+        item_id = msg.message_id
+        if state.is_seen(name, item_id):
+            continue
+        if len(updates) < max_items:
+            content = msg.preview or ""
+            link = ""
+            urls = _URL_RE.findall(content)
+            if urls and len(content.split()) <= 10:
+                link = urls[0]
+                try:
+                    content = extract_text(http_get(link), link) or content
+                except Exception:
+                    pass
+            updates.append(
+                Update(
+                    source=name,
+                    title=msg.subject or "(无标题)",
+                    link=link,
+                    content=content,
+                    kind="article",
+                )
+            )
+        state.mark_seen(name, item_id)
+    return updates
+
+
 def fetch_source(source: dict, state: State, max_items: int) -> list[Update]:
     if source["type"] == "rss":
         return fetch_rss(source, state, max_items)
     if source["type"] in ("page", "browser"):
         return fetch_page(source, state)
+    if source["type"] == "inbox":
+        return fetch_inbox(source, state, max_items)
     raise ValueError(f"未知 source type: {source['type']}")

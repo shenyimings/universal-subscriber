@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from subscriber.fetch import Update, fetch_rss, fetch_page, fetch_source
+from subscriber.fetch import Update, fetch_rss, fetch_page, fetch_inbox, fetch_source
 
 
 SAMPLE_RSS = """<?xml version="1.0" encoding="UTF-8"?>
@@ -109,6 +109,83 @@ class TestFetchPage:
             fetch_page(source, state)
 
 
+def _make_msg(message_id, subject="Test", preview="body text", labels=None):
+    msg = MagicMock()
+    msg.message_id = message_id
+    msg.subject = subject
+    msg.preview = preview
+    msg.labels = labels or ["received", "unread"]
+    return msg
+
+
+class TestFetchInbox:
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch._agentmail_client")
+    def test_new_messages_returned(self, mock_cls, state):
+        client = mock_cls.return_value  # _agentmail_client(key) returns this
+        resp = MagicMock()
+        resp.messages = [_make_msg("m1", "Hello", preview="some content")]
+        client.inboxes.messages.list.return_value = resp
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        updates = fetch_inbox(source, state, max_items=5)
+        assert len(updates) == 1
+        assert updates[0].title == "Hello"
+        assert updates[0].content == "some content"
+        assert state.is_seen("inbox", "m1")
+
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch._agentmail_client")
+    def test_sent_messages_skipped(self, mock_cls, state):
+        client = mock_cls.return_value  # _agentmail_client(key) returns this
+        resp = MagicMock()
+        resp.messages = [_make_msg("m1", labels=["sent"])]
+        client.inboxes.messages.list.return_value = resp
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        updates = fetch_inbox(source, state, max_items=5)
+        assert len(updates) == 0
+
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch._agentmail_client")
+    def test_already_seen_skipped(self, mock_cls, state):
+        state.mark_seen("inbox", "m1")
+        client = mock_cls.return_value  # _agentmail_client(key) returns this
+        resp = MagicMock()
+        resp.messages = [_make_msg("m1")]
+        client.inboxes.messages.list.return_value = resp
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        updates = fetch_inbox(source, state, max_items=5)
+        assert len(updates) == 0
+
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch.extract_text", return_value="extracted article")
+    @patch("subscriber.fetch.http_get", return_value="<html>page</html>")
+    @patch("subscriber.fetch._agentmail_client")
+    def test_url_only_body_fetched(self, mock_cls, mock_get, mock_extract, state):
+        client = mock_cls.return_value  # _agentmail_client(key) returns this
+        resp = MagicMock()
+        resp.messages = [_make_msg("m1", "Link", preview="https://example.com/article")]
+        client.inboxes.messages.list.return_value = resp
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        updates = fetch_inbox(source, state, max_items=5)
+        assert len(updates) == 1
+        assert updates[0].content == "extracted article"
+        assert updates[0].link == "https://example.com/article"
+
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch._agentmail_client")
+    def test_max_items_limit(self, mock_cls, state):
+        client = mock_cls.return_value  # _agentmail_client(key) returns this
+        resp = MagicMock()
+        resp.messages = [_make_msg(f"m{i}") for i in range(5)]
+        client.inboxes.messages.list.return_value = resp
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        updates = fetch_inbox(source, state, max_items=2)
+        assert len(updates) == 2
+        # all 5 should be marked seen
+        for i in range(5):
+            assert state.is_seen("inbox", f"m{i}")
+
+
 class TestFetchSource:
     @patch("subscriber.fetch.fetch_rss", return_value=[])
     def test_dispatches_rss(self, mock_rss, state):
@@ -127,6 +204,12 @@ class TestFetchSource:
         source = {"name": "x", "type": "browser", "url": "u"}
         fetch_source(source, state, 5)
         mock_page.assert_called_once()
+
+    @patch("subscriber.fetch.fetch_inbox", return_value=[])
+    def test_dispatches_inbox(self, mock_inbox, state):
+        source = {"name": "x", "type": "inbox", "inbox_id": "t@agentmail.to"}
+        fetch_source(source, state, 5)
+        mock_inbox.assert_called_once()
 
     def test_unknown_type_raises(self, state):
         with pytest.raises(ValueError, match="未知 source type"):
