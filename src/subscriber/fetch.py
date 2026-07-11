@@ -126,9 +126,10 @@ def fetch_inbox(source: dict, state: State, max_items: int) -> list[Update]:
     """Fetch unread received emails from an AgentMail inbox."""
 
     name = source["name"]
-    api_key = os.environ.get(source.get("api_key_env", "AGENTMAIL_API_KEY"))
+    env_name = source.get("api_key_env", "AGENTMAIL_API_KEY")
+    api_key = os.environ.get(env_name)
     if not api_key:
-        raise RuntimeError(f"环境变量 {source.get('api_key_env')} 未设置")
+        raise RuntimeError(f"环境变量 {env_name} 未设置")
     client = _agentmail_client(api_key)
     inbox_id = source["inbox_id"]
 
