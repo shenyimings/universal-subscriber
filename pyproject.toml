@@ -1,7 +1,7 @@
 [project]
-name = "subscriber"
-version = "0.1.0"
-description = "Add your description here"
+name = "universal-subscriber"
+version = "0.2.0"
+description = "Watch feeds and pages, get an LLM-curated daily digest, and grow a personal knowledge wiki from what you read"
 readme = "README.md"
 authors = [
     { name = "“shenyimings”", email = "seuilping@outlook.com" }
@@ -18,6 +18,9 @@ dependencies = [
 
 [project.scripts]
 subscriber = "subscriber:main"
+
+[tool.uv.build-backend]
+module-name = "subscriber"
 
 [dependency-groups]
 dev = [

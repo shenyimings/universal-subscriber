@@ -4,3 +4,6 @@ prompts.yaml
 data/
 __pycache__/
 .venv
+.coverage
+wiki/
+CLAUDE.md
