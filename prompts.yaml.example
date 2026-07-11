@@ -42,3 +42,54 @@ page: |
   Page: {title} ({link})
   Diff:
   {content}
+
+# Wiki compiler prompts.
+# wiki_plan variables: {persona} {index} {title} {source} {url} {summary} {content}
+# wiki_page variables: {persona} {file} {focus} {existing} {title} {url} {date} {summary} {content}
+# Note: templates go through Python str.format, so literal braces must be {{ }}.
+
+wiki_plan: |
+  You maintain the reader's personal knowledge wiki. Reader profile:
+  {persona}
+  The wiki consists of concept pages under pages/. Current index:
+  {index}
+  Below is a new article. Decide which pages should absorb its knowledge:
+  - Prefer updating existing pages; only create a new page for a concept,
+    entity or method that deserves its own page and will be linked from others;
+  - Pages are long-lived knowledge units (a technique, methodology, tool,
+    protocol), not one page per article;
+  - File names are lowercase with hyphens, e.g. llm-agent-harness.md;
+  - At most 3 pages; output an empty array [] if nothing is worth keeping.
+  Output only a JSON array, no explanation:
+  [{{"file": "xxx.md", "action": "create or update", "focus": "what this page should absorb from the article"}}]
+
+  Source: {source}
+  Title: {title} ({url})
+  Summary: {summary}
+  Full text:
+  {content}
+
+wiki_page: |
+  You maintain the reader's personal knowledge wiki. Reader profile:
+  {persona}
+  Write the complete new version of page {file}:
+  - Start with YAML frontmatter containing a `description` field (one line, used in the index);
+  - The body distills knowledge for long-term reference: concepts, mechanisms,
+    key conclusions and data - not news reporting;
+  - Link other wiki pages with [[filename-without-extension]] wikilinks; link
+    names must be lowercase-hyphenated page file names (e.g. [[llm-agent-harness]]);
+    linking pages that do not exist yet but deserve to is fine;
+  - Cite source articles with their links;
+  - If existing content is shown below, keep what is still valid, merge the new
+    knowledge in, and call out contradictions explicitly instead of silently overwriting.
+  Focus for this update: {focus}
+
+  Current page content:
+  {existing}
+
+  New article: {title} ({url}, {date})
+  Summary: {summary}
+  Full text:
+  {content}
+
+  Output only the page markdown, no explanation, no code fences.

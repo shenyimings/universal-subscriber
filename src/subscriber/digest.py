@@ -43,11 +43,17 @@ def summarize(
 
 
 def build_digest(
-    updates: list[Update], llm_cfg: dict, prompts: dict, max_chars: int
+    updates: list[Update],
+    llm_cfg: dict,
+    prompts: dict,
+    max_chars: int,
+    on_keep=None,
 ) -> str | None:
     """Group updates by source and render a plain-text digest.
 
     Returns None if every update was filtered out as irrelevant.
+    on_keep(update, summary) is called for each item that survives the
+    SKIP filter (used to archive articles into the wiki).
     """
     by_source: dict[str, list[Update]] = {}
     for u in updates:
@@ -62,6 +68,8 @@ def build_digest(
             if summary is None:
                 print(f"[digest] 过滤无关条目: {u.title}", file=sys.stderr)
                 continue
+            if on_keep:
+                on_keep(u, summary)
             section += ["", summary, f"链接: {u.link}"]
             kept += 1
         if len(section) > 1:

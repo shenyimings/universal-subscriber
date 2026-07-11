@@ -17,6 +17,9 @@ limits:
   max_items_per_source: 5   # max items summarized per source per run
   max_chars_per_item: 6000  # max characters of body text sent to the LLM
 
+# wiki:
+#   dir: wiki               # where archived sources and compiled pages live (default: wiki/)
+
 sources:
   - name: Example RSS
     type: rss
