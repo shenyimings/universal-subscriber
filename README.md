@@ -1,6 +1,6 @@
 # subscriber
 
-![coverage](https://img.shields.io/badge/coverage-62%25-yellow)
+![coverage](https://img.shields.io/badge/coverage-65%25-yellow)
 
 Watch information sources → have an LLM (DeepSeek) summarize and translate the updates → email you a daily digest.
 
