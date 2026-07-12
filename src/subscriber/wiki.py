@@ -64,7 +64,7 @@ def append_log(wiki_dir: Path, action: str, detail: str) -> None:
 
 def _chat(llm_cfg: dict, prompt: str) -> str:
     resp = _client(llm_cfg).chat.completions.create(
-        model=llm_cfg["model"],
+        model=llm_cfg.get("wiki_model", llm_cfg["model"]),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
     )

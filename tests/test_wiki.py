@@ -1,8 +1,9 @@
 """Tests for the wiki compiler — LLM calls are mocked."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from subscriber.wiki import (
+    _chat,
     _parse_plan,
     compile_source,
     dump_front,
@@ -36,6 +37,28 @@ def _write_page(wiki_dir, stem, description="desc", body=""):
     d = wiki_dir / "pages"
     d.mkdir(parents=True, exist_ok=True)
     (d / f"{stem}.md").write_text(f"---\ndescription: {description}\n---\n{body}\n")
+
+
+class TestChatModelSelection:
+    @patch("subscriber.wiki._client")
+    def test_uses_wiki_model_when_set(self, mock_client_fn):
+        client = mock_client_fn.return_value
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="ok"))]
+        )
+        cfg = {"model": "flash", "wiki_model": "pro"}
+        _chat(cfg, "prompt")
+        assert client.chat.completions.create.call_args.kwargs["model"] == "pro"
+
+    @patch("subscriber.wiki._client")
+    def test_falls_back_to_model_when_wiki_model_unset(self, mock_client_fn):
+        client = mock_client_fn.return_value
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="ok"))]
+        )
+        cfg = {"model": "flash"}
+        _chat(cfg, "prompt")
+        assert client.chat.completions.create.call_args.kwargs["model"] == "flash"
 
 
 class TestFrontmatter:

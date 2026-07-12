@@ -6,7 +6,8 @@
 
 llm:
   base_url: https://api.deepseek.com
-  model: deepseek-chat
+  model: deepseek-chat           # used for the daily digest (simple task, cheap model is fine)
+  wiki_model: deepseek-reasoner  # used for wiki compilation (merging/dedup needs more reasoning); falls back to `model` if omitted
   api_key_env: DEEPSEEK_API_KEY
 
 email:
