@@ -64,7 +64,13 @@ def build_digest(
     for source, items in by_source.items():
         section = [f"■ {source}"]
         for u in items:
-            summary = summarize(u, llm_cfg, prompts, max_chars)
+            try:
+                summary = summarize(u, llm_cfg, prompts, max_chars)
+            except Exception as e:
+                # Don't let one failing LLM call sink the whole batch; the
+                # item has already been marked seen by the fetcher.
+                print(f"[digest] LLM 失败,跳过条目 {u.title}: {e}", file=sys.stderr)
+                continue
             if summary is None:
                 print(f"[digest] 过滤无关条目: {u.title}", file=sys.stderr)
                 continue

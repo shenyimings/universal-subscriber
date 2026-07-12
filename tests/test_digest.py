@@ -86,3 +86,27 @@ class TestBuildDigest:
         result = build_digest(updates, LLM_CFG, PROMPTS, 6000)
         assert "■ A" in result
         assert "■ B" in result
+
+    @patch("subscriber.digest.summarize")
+    def test_llm_exception_skips_item_but_keeps_others(self, mock_sum):
+        # A failing LLM call on one item must not sink the whole batch,
+        # since the fetcher has already marked those items as seen.
+        mock_sum.side_effect = [RuntimeError("Insufficient Balance"), "ok"]
+        updates = [_make_update(title="broken"), _make_update(title="fine")]
+        result = build_digest(updates, LLM_CFG, PROMPTS, 6000)
+        assert result is not None
+        assert "ok" in result
+        assert "broken" not in result
+
+    @patch("subscriber.digest.summarize")
+    def test_all_items_failing_returns_none(self, mock_sum):
+        mock_sum.side_effect = RuntimeError("boom")
+        result = build_digest([_make_update()], LLM_CFG, PROMPTS, 6000)
+        assert result is None
+
+    @patch("subscriber.digest.summarize")
+    def test_llm_exception_does_not_trigger_on_keep(self, mock_sum):
+        mock_sum.side_effect = RuntimeError("boom")
+        seen = []
+        build_digest([_make_update()], LLM_CFG, PROMPTS, 6000, on_keep=lambda u, s: seen.append(u))
+        assert seen == []
