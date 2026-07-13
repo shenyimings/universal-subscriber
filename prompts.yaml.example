@@ -44,14 +44,15 @@ page: |
   {content}
 
 # Wiki compiler prompts.
-# wiki_plan variables: {persona} {index} {title} {source} {url} {summary} {content}
-# wiki_page variables: {persona} {file} {focus} {existing} {title} {url} {date} {summary} {content}
+# wiki_plan variables: {persona} {index} {categories} {title} {source} {url} {summary} {content}
+# wiki_page variables: {persona} {file} {focus} {index} {category} {existing} {title} {url} {date} {summary} {content}
 # Note: templates go through Python str.format, so literal braces must be {{ }}.
 
 wiki_plan: |
   You maintain the reader's personal knowledge wiki. Reader profile:
   {persona}
-  The wiki consists of concept pages under pages/. Current index:
+  The wiki consists of concept pages under pages/. Current index, grouped by
+  category (each entry: [[page-name]] `tag` `tag` — description):
   {index}
   Below is a new article. Decide which pages should absorb its knowledge:
   - Prefer updating existing pages; only create a new page for a concept,
@@ -59,9 +60,13 @@ wiki_plan: |
   - Pages are long-lived knowledge units (a technique, methodology, tool,
     protocol), not one page per article;
   - File names are lowercase with hyphens, e.g. llm-agent-harness.md;
+  - Give each page a category, chosen from the fixed set: {categories};
+  - Give each page 2-4 tags (lowercase, hyphenated): reuse tags already present
+    in the index whenever possible; only invent a new tag when nothing fits,
+    and never create synonyms (if `fuzzing` exists, do not add `fuzz-testing`);
   - At most 3 pages; output an empty array [] if nothing is worth keeping.
   Output only a JSON array, no explanation:
-  [{{"file": "xxx.md", "action": "create or update", "focus": "what this page should absorb from the article"}}]
+  [{{"file": "xxx.md", "action": "create or update", "focus": "what this page should absorb from the article", "category": "category-name", "tags": ["tag1", "tag2"]}}]
 
   Source: {source}
   Title: {title} ({url})
@@ -78,11 +83,18 @@ wiki_page: |
     key conclusions and data - not news reporting;
   - Link other wiki pages with [[filename-without-extension]] wikilinks; link
     names must be lowercase-hyphenated page file names (e.g. [[llm-agent-harness]]);
-    linking pages that do not exist yet but deserve to is fine;
+  - Wikilinks may only point to pages in the same-category list below;
+    linking a same-category page that does not exist yet but deserves to is
+    fine, but be restrained - only concepts that truly deserve their own page;
+    never link to pages of other categories, and a "related pages" section
+    (if any) must likewise list only same-category pages;
   - Cite source articles with their links;
   - If existing content is shown below, keep what is still valid, merge the new
     knowledge in, and call out contradictions explicitly instead of silently overwriting.
   Focus for this update: {focus}
+
+  Pages in the same category ({category}):
+  {index}
 
   Current page content:
   {existing}

@@ -158,6 +158,7 @@ def compile_source(
     plan_prompt = prompts["wiki_plan"].format(
         persona=prompts.get("persona", "").strip(),
         index=index_text,
+        categories=", ".join(CATEGORIES),
         title=meta.get("title", ""),
         source=meta.get("source", ""),
         url=meta.get("url", ""),
@@ -172,10 +173,13 @@ def compile_source(
     for item in plan:
         page_path = pages_dir / item["file"]
         existing = page_path.read_text() if page_path.exists() else "(新页面,尚无内容)"
+        category = item["category"] or _category_of(parse_front(existing)[0])
         page_prompt = prompts["wiki_page"].format(
             persona=prompts.get("persona", "").strip(),
             file=item["file"],
             focus=item["focus"],
+            index=category_index(wiki_dir, category),
+            category=category,
             existing=existing,
             title=meta.get("title", ""),
             url=meta.get("url", ""),

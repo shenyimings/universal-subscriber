@@ -16,8 +16,11 @@ from subscriber.wiki import (
 LLM_CFG = {"base_url": "https://api.test", "model": "test", "api_key_env": "TEST_KEY"}
 PROMPTS = {
     "persona": "test reader",
-    "wiki_plan": "{persona}|{index}|{title}|{source}|{url}|{summary}|{content}",
-    "wiki_page": "{persona}|{file}|{focus}|{existing}|{title}|{url}|{date}|{summary}|{content}",
+    "wiki_plan": "{persona}|{index}|{categories}|{title}|{source}|{url}|{summary}|{content}",
+    "wiki_page": (
+        "{persona}|{file}|{focus}|{index}|{category}|{existing}"
+        "|{title}|{url}|{date}|{summary}|{content}"
+    ),
 }
 
 
@@ -142,6 +145,21 @@ class TestCompileSource:
         src_meta, _ = parse_front(src.read_text())
         assert src_meta["compiled"] is True
         assert "ingest | T" in (tmp_path / "log.md").read_text()
+
+    @patch("subscriber.wiki._chat")
+    def test_page_prompt_gets_same_category_index(self, mock_chat, tmp_path):
+        _write_page(tmp_path, "peer", description="同类页", category="ai-security")
+        _write_page(tmp_path, "stranger", description="他类页", category="llm-systems")
+        src = _write_source(tmp_path)
+        mock_chat.side_effect = [
+            '[{"file": "topic.md", "action": "create", "focus": "f",'
+            ' "category": "ai-security", "tags": []}]',
+            "---\ndescription: d\n---\n正文\n",
+        ]
+        compile_source(src, tmp_path, LLM_CFG, PROMPTS, 6000)
+        page_prompt = mock_chat.call_args_list[1].args[1]
+        assert "|ai-security|" in page_prompt
+        assert "[[peer]]" in page_prompt and "[[stranger]]" not in page_prompt
 
     @patch("subscriber.wiki._chat")
     def test_empty_plan_still_marks_compiled(self, mock_chat, tmp_path):
