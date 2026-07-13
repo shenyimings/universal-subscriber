@@ -19,6 +19,7 @@ uv run subscriber run --source ethresear.ch --dry-run # run a single source
 uv run subscriber wiki                                # compile archived sources into wiki pages
 uv run subscriber wiki --limit 10                     # compile at most 10 sources this run
 uv run subscriber wiki --lint                         # health check: broken links, orphan pages, backlog
+uv run subscriber wiki --lint --fix                   # LLM-assisted broken-link repair, then the health check
 ```
 
 On the first run: RSS sources take the newest `max_items_per_source` entries and mark the rest as read; `page` sources record a baseline snapshot and only report a summary once the page changes.
@@ -35,11 +36,15 @@ uv run python scripts/backfill.py --max-items 15      # newest 15 items per sour
 wiki/
   sources/YYYY/MM/*.md   archived articles: frontmatter + summary + full text (immutable)
   pages/*.md             curated knowledge pages, cross-linked with [[wikilinks]]
-  index.md               one line per page, rebuilt from page frontmatter on every compile
+  index.md               one line per page, grouped by category with tags, rebuilt from page frontmatter on every compile
   log.md                 append-only ingest log
 ```
 
-`subscriber run` archives every article that passes the persona filter into `wiki/sources/` with `compiled: false`. `subscriber wiki` then feeds each pending source to the LLM twice: once to plan which pages should absorb it (update an existing page, or create a new one when a concept deserves its own entry), and once per page to merge the new knowledge into the page content. Sources are marked `compiled: true` afterwards and never flow through the LLM again.
+`subscriber run` archives every article that passes the persona filter into `wiki/sources/` with `compiled: false`. `subscriber wiki` then feeds each pending source to the LLM twice: once to plan which pages should absorb it (update an existing page, or create a new one when a concept deserves its own entry) along with a category and tags for each page, and once per page to merge the new knowledge into the page content. Sources are marked `compiled: true` afterwards and never flow through the LLM again.
+
+Pages belong to one of a fixed set of categories and carry a few tags from a shared vocabulary; both live in the frontmatter and the index, which is how the planning step learns them. When writing a page, the LLM only sees the index slice of that page's own category, so cross-references stay within a category instead of linking everything to everything.
+
+Wikilinks pointing at pages that do not exist yet are allowed on purpose — they mark concepts worth writing up later. `subscriber wiki --lint --fix` keeps this from getting out of hand: it has the LLM redirect near-miss names to existing pages, degrade links not worth a page to plain text, and keep the genuinely valuable ones (marked as unbuilt) within a fixed share of all links. The text replacements are applied by code; the LLM only rules on each link.
 
 The wiki is plain markdown with YAML frontmatter and `[[wikilinks]]`, so it opens directly in Obsidian, and any LLM agent pointed at the directory can answer questions from it — read `index.md` first, then follow links. Since it is just files, syncing it elsewhere is a `git push`: keep the wiki directory in a private repo and you can attach the same knowledge base to whatever tool you use, on any machine, without running a server.
 
