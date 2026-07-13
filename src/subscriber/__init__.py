@@ -37,6 +37,9 @@ def main() -> None:
         "--dry-run", action="store_true", help="只打印日报，不发送邮件"
     )
     parser.add_argument("--lint", action="store_true", help="wiki: 只做健康检查")
+    parser.add_argument(
+        "--fix", action="store_true", help="wiki: 与 --lint 连用，先做一轮坏链修复"
+    )
     parser.add_argument("--limit", type=int, help="wiki: 本次最多编译几篇")
     args = parser.parse_args()
 
@@ -53,9 +56,11 @@ def main() -> None:
     wiki_dir = root / cfg.get("wiki", {}).get("dir", "wiki")
 
     if args.command == "wiki":
-        from .wiki import compile_wiki, lint_wiki
+        from .wiki import compile_wiki, fix_wikilinks, lint_wiki
 
         if args.lint:
+            if args.fix:
+                fix_wikilinks(wiki_dir, cfg["llm"], prompts)
             issues = lint_wiki(wiki_dir)
             print("\n".join(issues) if issues else "wiki 状态健康。")
             return

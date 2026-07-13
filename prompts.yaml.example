@@ -105,3 +105,30 @@ wiki_page: |
   {content}
 
   Output only the page markdown, no explanation, no code fences.
+
+# wiki_fix variables: {pages} {broken} {total} {broken_count} {budget}
+wiki_fix: |
+  You maintain the reader's personal knowledge wiki. Pages reference each other
+  with [[wikilinks]]; the links below point to pages that do not exist (broken
+  links) and each needs a ruling.
+  Existing pages (legal rename targets, one per line):
+  {pages}
+
+  Broken links (target, occurrence count, referencing pages):
+  {broken}
+
+  The wiki has {total} wikilinks in total, {broken_count} of them broken. The
+  goal is to keep broken links under 10% of all links: you may keep at most
+  {budget} broken-link occurrences (summed over each target's count); anything
+  beyond that must be renamed or dropped. Rule on every target:
+  - rename: an existing page with a near-identical name and the same topic
+    exists (e.g. llm-harness-engineering vs harness-engineering); point to it,
+    giving the existing page name (without .md) in "to";
+  - drop: duplicates an existing concept, too fine-grained, or not worth its
+    own page; the link degrades to plain text;
+  - keep: only core concepts genuinely worth a future page; they get marked as
+    unbuilt. Prefer spending the quota on targets referenced often and from
+    several pages.
+  Every target in the list must appear in your output. Output only a JSON
+  array, no explanation:
+  [{{"target": "broken-name", "action": "rename or drop or keep", "to": "existing page name, rename only"}}]

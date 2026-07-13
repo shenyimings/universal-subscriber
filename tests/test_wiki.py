@@ -3,10 +3,13 @@
 from unittest.mock import MagicMock, patch
 
 from subscriber.wiki import (
+    _apply_fix,
     _chat,
     _parse_plan,
+    _strip_stale_markers,
     compile_source,
     dump_front,
+    fix_wikilinks,
     lint_wiki,
     parse_front,
     pending_sources,
@@ -215,3 +218,74 @@ class TestIndexAndLint:
         _write_page(tmp_path, "a", body="see [[b]]")
         _write_page(tmp_path, "b", body="see [[a]]")
         assert lint_wiki(tmp_path) == []
+
+
+class TestApplyFix:
+    def test_rename_all_link_forms(self):
+        text = "a [[old]] b [[old|别名]] c [[old#节]] d [[older]]"
+        out = _apply_fix(text, "old", "rename", "new")
+        assert out == "a [[new]] b [[new|别名]] c [[new#节]] d [[older]]"
+
+    def test_drop_unwraps_and_clears_marker(self):
+        text = "a [[gone]] b [[gone|别名]] c [[gone]]（未建） d"
+        out = _apply_fix(text, "gone", "drop")
+        assert out == "a gone b 别名 c gone d"
+
+    def test_keep_marks_once_idempotent(self):
+        text = "a [[future]] b [[future]]（未建）"
+        out = _apply_fix(text, "future", "keep")
+        assert out == "a [[future]]（未建） b [[future]]（未建）"
+        assert _apply_fix(out, "future", "keep") == out
+
+    def test_strip_stale_markers_only_for_existing(self):
+        text = "[[built]]（未建） and [[still-missing]]（未建）"
+        out = _strip_stale_markers(text, {"built"})
+        assert out == "[[built]] and [[still-missing]]（未建）"
+
+
+class TestFixWikilinks:
+    PROMPTS = {"wiki_fix": "{pages}|{broken}|{total}|{broken_count}|{budget}"}
+
+    @patch("subscriber.wiki._chat")
+    def test_end_to_end_rename_drop_keep(self, mock_chat, tmp_path):
+        _write_page(tmp_path, "harness-engineering", body="real page [[a]]")
+        _write_page(
+            tmp_path, "a",
+            body="x [[llm-harness-engineering]] y [[tiny-detail]] z [[worth-building]]",
+        )
+        mock_chat.return_value = (
+            '[{"target": "llm-harness-engineering", "action": "rename", "to": "harness-engineering"},'
+            ' {"target": "tiny-detail", "action": "drop"},'
+            ' {"target": "worth-building", "action": "keep"}]'
+        )
+        fix_wikilinks(tmp_path, LLM_CFG, self.PROMPTS)
+        body = (tmp_path / "pages" / "a.md").read_text()
+        assert "[[harness-engineering]]" in body
+        assert "[[tiny-detail]]" not in body and "tiny-detail" in body
+        assert "[[worth-building]]（未建）" in body
+        assert "fix |" in (tmp_path / "log.md").read_text()
+
+    @patch("subscriber.wiki._chat")
+    def test_invalid_rename_target_skipped(self, mock_chat, tmp_path):
+        _write_page(tmp_path, "a", body="[[missing]] [[a]]")
+        mock_chat.return_value = (
+            '[{"target": "missing", "action": "rename", "to": "nonexistent"}]'
+        )
+        fix_wikilinks(tmp_path, LLM_CFG, self.PROMPTS)
+        assert "[[missing]]" in (tmp_path / "pages" / "a.md").read_text()
+
+    @patch("subscriber.wiki._chat")
+    def test_no_broken_links_no_llm_call(self, mock_chat, tmp_path):
+        _write_page(tmp_path, "a", body="see [[a]]")
+        fix_wikilinks(tmp_path, LLM_CFG, self.PROMPTS)
+        mock_chat.assert_not_called()
+
+    @patch("subscriber.wiki._chat")
+    def test_budget_computed_from_total_links(self, mock_chat, tmp_path):
+        body = " ".join("[[a]]" for _ in range(20)) + " [[missing]] [[missing]]"
+        _write_page(tmp_path, "a", body=body)
+        mock_chat.return_value = '[{"target": "missing", "action": "keep"}]'
+        fix_wikilinks(tmp_path, LLM_CFG, self.PROMPTS)
+        prompt = mock_chat.call_args.args[1]
+        # 22 个链接 * 10% = 2 次保留配额
+        assert prompt.endswith("|22|2|2")
