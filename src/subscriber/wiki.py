@@ -24,6 +24,15 @@ from .digest import _client
 _FRONT_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)")
 
+# 固定分类，索引按此分节；不在列表内的归入 uncategorized。
+CATEGORIES = [
+    "agent-engineering",
+    "ai-security",
+    "blockchain-security",
+    "llm-systems",
+    "program-analysis",
+]
+
 
 def parse_front(text: str) -> tuple[dict, str]:
     m = _FRONT_RE.match(text)
@@ -47,13 +56,44 @@ def pending_sources(wiki_dir: Path) -> list[Path]:
     return [p for _, p in sorted(files)]
 
 
+def _page_entries(wiki_dir: Path) -> list[tuple[str, dict]]:
+    pages_dir = wiki_dir / "pages"
+    pages = sorted(pages_dir.glob("*.md")) if pages_dir.exists() else []
+    return [(p.stem, parse_front(p.read_text())[0]) for p in pages]
+
+
+def _index_line(stem: str, meta: dict) -> str:
+    tags = " ".join(f"`{t}`" for t in meta.get("tags") or [])
+    tags = f" {tags}" if tags else ""
+    return f"- [[{stem}]]{tags} — {meta.get('description', '')}"
+
+
+def _category_of(meta: dict) -> str:
+    cat = meta.get("category", "")
+    return cat if cat in CATEGORIES else "uncategorized"
+
+
+def category_index(wiki_dir: Path, category: str) -> str:
+    """同一分类下的页面清单，供 wiki_page prompt 做同类互引上下文。"""
+    lines = [
+        _index_line(stem, meta)
+        for stem, meta in _page_entries(wiki_dir)
+        if _category_of(meta) == category
+    ]
+    return "\n".join(lines) if lines else "(该分类暂无页面)"
+
+
 def rebuild_index(wiki_dir: Path) -> None:
-    pages = sorted((wiki_dir / "pages").glob("*.md")) if (wiki_dir / "pages").exists() else []
+    entries = _page_entries(wiki_dir)
     lines = ["# 索引", "", "由编译器自动重建,请勿手工编辑。", ""]
-    for p in pages:
-        meta, _ = parse_front(p.read_text())
-        lines.append(f"- [[{p.stem}]] — {meta.get('description', '')}")
-    (wiki_dir / "index.md").write_text("\n".join(lines) + "\n")
+    for cat in CATEGORIES + ["uncategorized"]:
+        group = [(s, m) for s, m in entries if _category_of(m) == cat]
+        if not group:
+            continue
+        lines += [f"## {cat}", ""]
+        lines += [_index_line(s, m) for s, m in group]
+        lines.append("")
+    (wiki_dir / "index.md").write_text("\n".join(lines).rstrip("\n") + "\n")
 
 
 def append_log(wiki_dir: Path, action: str, detail: str) -> None:
@@ -85,10 +125,16 @@ def _parse_plan(text: str) -> list[dict]:
         file = str(item.get("file", "")).strip()
         if not file.endswith(".md") or "/" in file:
             continue
+        category = str(item.get("category", "")).strip()
+        tags = item.get("tags") or []
+        if not isinstance(tags, list):
+            tags = []
         out.append({
             "file": file,
             "action": item.get("action", "update"),
             "focus": item.get("focus", ""),
+            "category": category if category in CATEGORIES else "",
+            "tags": [str(t).strip().lower() for t in tags if str(t).strip()],
         })
     return out[:3]
 
@@ -142,6 +188,10 @@ def compile_source(
         page_meta, page_body = parse_front(page)
         if "description" not in page_meta:
             page_meta["description"] = item["focus"][:80]
+        if item["category"] and page_meta.get("category") not in CATEGORIES:
+            page_meta["category"] = item["category"]
+        if item["tags"] and not page_meta.get("tags"):
+            page_meta["tags"] = item["tags"]
         page_meta["updated"] = date.today().isoformat()
         page_path.write_text(dump_front(page_meta, page_body))
         touched.append(item["file"])

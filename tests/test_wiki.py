@@ -33,10 +33,15 @@ def _write_source(wiki_dir, name="a.md", compiled=False, title="T", day="2026-07
     return path
 
 
-def _write_page(wiki_dir, stem, description="desc", body=""):
+def _write_page(wiki_dir, stem, description="desc", body="", category=None, tags=None):
     d = wiki_dir / "pages"
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{stem}.md").write_text(f"---\ndescription: {description}\n---\n{body}\n")
+    front = f"description: {description}\n"
+    if category:
+        front += f"category: {category}\n"
+    if tags:
+        front += "tags:\n" + "".join(f"- {t}\n" for t in tags)
+    (d / f"{stem}.md").write_text(f"---\n{front}---\n{body}\n")
 
 
 class TestChatModelSelection:
@@ -84,7 +89,9 @@ class TestPendingSources:
 class TestParsePlan:
     def test_fenced_json(self):
         plan = _parse_plan('```json\n[{"file": "a.md", "action": "create", "focus": "f"}]\n```')
-        assert plan == [{"file": "a.md", "action": "create", "focus": "f"}]
+        assert plan == [
+            {"file": "a.md", "action": "create", "focus": "f", "category": "", "tags": []}
+        ]
 
     def test_rejects_bad_files_and_caps_at_three(self):
         items = [{"file": f"p{i}.md", "action": "update", "focus": ""} for i in range(5)]
@@ -98,19 +105,38 @@ class TestParsePlan:
         assert _parse_plan("sorry, no idea") == []
         assert _parse_plan("[not json]") == []
 
+    def test_category_and_tags_validated(self):
+        plan = _parse_plan(
+            '[{"file": "a.md", "action": "create", "focus": "f",'
+            ' "category": "ai-security", "tags": ["Fuzzing", " llm-agent "]}]'
+        )
+        assert plan[0]["category"] == "ai-security"
+        assert plan[0]["tags"] == ["fuzzing", "llm-agent"]
+
+    def test_unknown_category_and_bad_tags_dropped(self):
+        plan = _parse_plan(
+            '[{"file": "a.md", "action": "create", "focus": "f",'
+            ' "category": "made-up", "tags": "not-a-list"}]'
+        )
+        assert plan[0]["category"] == ""
+        assert plan[0]["tags"] == []
+
 
 class TestCompileSource:
     @patch("subscriber.wiki._chat")
     def test_creates_page_and_marks_compiled(self, mock_chat, tmp_path):
         src = _write_source(tmp_path)
         mock_chat.side_effect = [
-            '[{"file": "topic.md", "action": "create", "focus": "要点"}]',
+            '[{"file": "topic.md", "action": "create", "focus": "要点",'
+            ' "category": "ai-security", "tags": ["fuzzing"]}]',
             "---\ndescription: 主题页\n---\n\n知识内容 [[other]]\n",
         ]
         touched = compile_source(src, tmp_path, LLM_CFG, PROMPTS, 6000)
         assert touched == ["topic.md"]
         page_meta, page_body = parse_front((tmp_path / "pages" / "topic.md").read_text())
         assert page_meta["description"] == "主题页"
+        assert page_meta["category"] == "ai-security"
+        assert page_meta["tags"] == ["fuzzing"]
         assert "updated" in page_meta
         assert "知识内容" in page_body
         src_meta, _ = parse_front(src.read_text())
@@ -138,11 +164,25 @@ class TestCompileSource:
 
 
 class TestIndexAndLint:
-    def test_rebuild_index_lists_pages(self, tmp_path):
-        _write_page(tmp_path, "alpha", description="第一页")
+    def test_rebuild_index_groups_by_category_with_tags(self, tmp_path):
+        _write_page(tmp_path, "alpha", description="第一页",
+                    category="ai-security", tags=["fuzzing", "llm-agent"])
+        _write_page(tmp_path, "beta", description="第二页")
         rebuild_index(tmp_path)
         index = (tmp_path / "index.md").read_text()
-        assert "[[alpha]] — 第一页" in index
+        assert "## ai-security" in index
+        assert "- [[alpha]] `fuzzing` `llm-agent` — 第一页" in index
+        assert "## uncategorized" in index
+        assert "- [[beta]] — 第二页" in index
+        assert index.index("## ai-security") < index.index("## uncategorized")
+
+    def test_category_index_filters_by_category(self, tmp_path):
+        from subscriber.wiki import category_index
+        _write_page(tmp_path, "alpha", description="第一页", category="ai-security")
+        _write_page(tmp_path, "beta", description="第二页", category="llm-systems")
+        listing = category_index(tmp_path, "ai-security")
+        assert "[[alpha]]" in listing and "[[beta]]" not in listing
+        assert category_index(tmp_path, "program-analysis") == "(该分类暂无页面)"
 
     def test_lint_reports_broken_link_orphan_and_backlog(self, tmp_path):
         _write_page(tmp_path, "a", body="link to [[missing]]")
