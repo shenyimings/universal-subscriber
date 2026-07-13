@@ -150,6 +150,21 @@ class TestCompileSource:
         assert "ingest | T" in (tmp_path / "log.md").read_text()
 
     @patch("subscriber.wiki._chat")
+    def test_manual_heading_numbers_stripped(self, mock_chat, tmp_path):
+        src = _write_source(tmp_path)
+        mock_chat.side_effect = [
+            '[{"file": "t.md", "action": "create", "focus": "f"}]',
+            "---\ndescription: d\n---\n# 1 是标题的一部分\n\n## 3. 关键推论\n\n"
+            "### 3.1 界面 3.1 正文里的数字保留\n\n## 无编号标题\n",
+        ]
+        compile_source(src, tmp_path, LLM_CFG, PROMPTS, 6000)
+        body = (tmp_path / "pages" / "t.md").read_text()
+        assert "## 关键推论" in body
+        assert "### 界面 3.1 正文里的数字保留" in body
+        assert "# 1 是标题的一部分" in body  # H1 untouched
+        assert "## 无编号标题" in body
+
+    @patch("subscriber.wiki._chat")
     def test_page_prompt_gets_same_category_index(self, mock_chat, tmp_path):
         _write_page(tmp_path, "peer", description="同类页", category="ai-security")
         _write_page(tmp_path, "stranger", description="他类页", category="llm-systems")
@@ -191,6 +206,7 @@ class TestIndexAndLint:
         _write_page(tmp_path, "beta", description="第二页")
         rebuild_index(tmp_path)
         index = (tmp_path / "index.md").read_text()
+        assert index.startswith("# Index\n")
         assert "## ai-security" in index
         assert "- [[alpha]] `fuzzing` `llm-agent` — 第一页" in index
         assert "## uncategorized" in index

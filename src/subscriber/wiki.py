@@ -23,6 +23,8 @@ from .digest import _client
 
 _FRONT_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)")
+# "## 3. 标题" / "### 3.1 标题" — the Hugo theme numbers headings itself
+_HEADING_NUM_RE = re.compile(r"^(#{2,6} )\d+(?:\.\d+)*[.、]?\s+", re.MULTILINE)
 
 # 固定分类，索引按此分节；不在列表内的归入 uncategorized。
 CATEGORIES = [
@@ -85,7 +87,7 @@ def category_index(wiki_dir: Path, category: str) -> str:
 
 def rebuild_index(wiki_dir: Path) -> None:
     entries = _page_entries(wiki_dir)
-    lines = ["# 索引", "", "由编译器自动重建,请勿手工编辑。", ""]
+    lines = ["# Index", ""]
     for cat in CATEGORIES + ["uncategorized"]:
         group = [(s, m) for s, m in entries if _category_of(m) == cat]
         if not group:
@@ -194,6 +196,7 @@ def compile_source(
         page = _chat(llm_cfg, page_prompt)
         page = re.sub(r"\A```(?:markdown)?\n|\n```\Z", "", page).strip() + "\n"
         page_meta, page_body = parse_front(page)
+        page_body = _HEADING_NUM_RE.sub(r"\1", page_body)
         if "description" not in page_meta:
             page_meta["description"] = item["focus"][:80]
         if item["category"] and page_meta.get("category") not in CATEGORIES:
