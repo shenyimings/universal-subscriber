@@ -1,0 +1,11 @@
+# ~/.config/systemd/user/subscriber-wiki.service — 凌晨编译 wiki（02:30，错峰享受 DeepSeek 夜间折扣）
+[Unit]
+Description=subscriber wiki compile (agent)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/subscriber/agent
+ExecStart=%h/.local/node22/bin/node src/main.ts --limit 5
+ExecStart=%h/subscriber/scripts/push_wiki.sh
+StandardOutput=append:%h/subscriber/data/run.log
+StandardError=append:%h/subscriber/data/run.log

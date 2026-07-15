@@ -40,7 +40,15 @@ wiki/
   log.md                 append-only ingest log
 ```
 
-`subscriber run` archives every article that passes the persona filter into `wiki/sources/` with `compiled: false`. `subscriber wiki` then feeds each pending source to the LLM twice: once to plan which pages should absorb it (update an existing page, or create a new one when a concept deserves its own entry) along with a category and tags for each page, and once per page to merge the new knowledge into the page content. Sources are marked `compiled: true` afterwards and never flow through the LLM again.
+`subscriber run` archives every article that passes the persona filter into `wiki/sources/` with `compiled: false`. The compile agent (`agent/`, built on [pi](https://github.com/earendil-works/pi)) then works through pending sources one at a time: it browses the index by category, reads only the pages it intends to touch, and merges the new knowledge with incremental string-replace edits instead of full-page rewrites. When a source is too thin to judge (a bare link), it fetches the URL and reads the full text first; when nothing is worth keeping it says so and moves on. A deterministic verifier — not the model's own judgment — decides whether the result is acceptable (frontmatter shape, category set, link style, page size cap); violations are fed back for repair, and only a clean pass marks the source `compiled: true`.
+
+```bash
+cd agent && npm install --ignore-scripts   # once; needs Node >= 22.19
+node src/main.ts --limit 5                 # compile up to 5 pending sources
+node src/main.ts --dry-run                 # just show the backlog
+```
+
+The older single-shot compiler (`subscriber wiki --limit N`) still works and shares the same on-disk format; `--lint` / `--fix` remain the health-check tools for both.
 
 Pages belong to one of a fixed set of categories and carry a few tags from a shared vocabulary; both live in the frontmatter and the index, which is how the planning step learns them. When writing a page, the LLM only sees the index slice of that page's own category, so cross-references stay within a category instead of linking everything to everything.
 
@@ -69,14 +77,15 @@ cp prompts.yaml.example prompts.yaml
 
 Look for an RSS endpoint first — many sites have one without linking it: Substack `/feed`, Medium `/feed/@user`, Discourse forums `/latest.rss`, GitHub Pages blogs `/index.xml` or `/feed/`. Fall back to `type: page` only when there is no feed.
 
-## Scheduled runs (daily at 8am)
+## Scheduled runs
 
-Configured via a systemd user timer (no cron on this box): `~/.config/systemd/user/subscriber.{service,timer}`, logs at `data/run.log`.
+Two systemd user timers (no cron on this box; templates in `scripts/systemd/`, logs at `data/run.log`): `subscriber.timer` fetches and sends the digest at 08:00, `subscriber-wiki.timer` runs the compile agent at 02:30 — DeepSeek's off-peak window, which halves the token price.
 
 ```bash
-systemctl --user list-timers subscriber.timer   # next run time
-systemctl --user start subscriber.service       # trigger once manually
-systemctl --user disable --now subscriber.timer # stop
+cp scripts/systemd/* ~/.config/systemd/user/ && systemctl --user daemon-reload
+systemctl --user enable --now subscriber.timer subscriber-wiki.timer
+systemctl --user list-timers 'subscriber*'      # next run times
+systemctl --user start subscriber-wiki.service  # trigger once manually
 ```
 
 ## Testing
@@ -92,4 +101,4 @@ All LLM and network calls are mocked in tests. The coverage badge is updated aut
 
 - `rss` / `page` fetching uses curl_cffi to mimic a Chrome TLS fingerprint, which gets past most anti-bot checks. Sites that require JS rendering or challenges need `type: browser` (depends on `~/.local/bin/obscura`; on complex React pages Obscura's `--dump text` needs a `selector` to isolate the main content).
 - The backfill script cannot reconstruct history for `browser` sources (no article list in a rendered text dump), and its link heuristic for `page` sources only finds articles nested under the listing page's own path.
-- Wiki compilation is sequential and costs one to four LLM calls per source; use `--limit` to spread a large backlog over several runs.
+- Wiki compilation is sequential; use `--limit` to spread a large backlog over several runs. The agent caps its own work per source (turn limit, page size cap), but token cost still varies with how many pages it decides to read.

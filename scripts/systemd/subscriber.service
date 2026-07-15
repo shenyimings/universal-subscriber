@@ -1,0 +1,11 @@
+# ~/.config/systemd/user/subscriber.service — 每日抓取 + 日报（08:00）
+[Unit]
+Description=subscriber daily digest
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/subscriber
+ExecStart=%h/.local/bin/uv run subscriber run
+ExecStart=%h/subscriber/scripts/push_wiki.sh
+StandardOutput=append:%h/subscriber/data/run.log
+StandardError=append:%h/subscriber/data/run.log
