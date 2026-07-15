@@ -1,0 +1,198 @@
+/** wiki 编译 agent：逐条把 pending 归档源沉淀进 wiki/pages/。
+ *
+ * 外循环（本文件，确定性代码）：挑选 pending 源、跑内循环、用验证器裁决、
+ * 标记 compiled、重建索引。内循环（pi Agent）：模型自主读索引/读页/增量编辑/
+ * 抓链接，直到调用 finish。终止由代码侧验证器决定，不采信模型自评。
+ *
+ * 用法：node src/main.ts [--limit N] [--max-turns N] [--dry-run]
+ */
+import { execFile } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { promisify } from "node:util";
+import { Agent } from "@earendil-works/pi-agent-core";
+import { createModels } from "@earendil-works/pi-ai";
+import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
+import { parse as parseYaml } from "yaml";
+import { type CompileCtx, makeTools } from "./tools.ts";
+import {
+	appendLog,
+	CATEGORIES,
+	markCompiled,
+	MAX_PAGE_CHARS,
+	parseFront,
+	pendingSources,
+	validatePage,
+} from "./wiki.ts";
+
+const execFileAsync = promisify(execFile);
+
+const ROOT = path.resolve(import.meta.dirname, "../..");
+const MAX_REPAIR_ROUNDS = 2;
+
+function arg(name: string, fallback: number): number {
+	const i = process.argv.indexOf(name);
+	return i >= 0 ? Number(process.argv[i + 1]) : fallback;
+}
+
+function argStr(name: string, fallback: string): string {
+	const i = process.argv.indexOf(name);
+	return i >= 0 ? process.argv[i + 1] : fallback;
+}
+
+/** 验证器：本次触碰过的页面必须全部合规，且超限页面不许继续膨胀。 */
+function verifyTouched(ctx: CompileCtx): string[] {
+	const problems: string[] = [];
+	for (const [file, sizeBefore] of ctx.touched) {
+		const p = path.join(ctx.wikiDir, "pages", file);
+		if (!fs.existsSync(p)) continue;
+		const content = fs.readFileSync(p, "utf-8");
+		problems.push(...validatePage(file, content));
+		if (content.length > MAX_PAGE_CHARS && content.length > sizeBefore) {
+			problems.push(`${file}: 页面 ${content.length} 字符，超过 ${MAX_PAGE_CHARS} 上限且仍在膨胀，请拆分`);
+		}
+	}
+	return problems;
+}
+
+interface SourceInput {
+	title: string;
+	url: string;
+	date: string;
+	summary: string;
+	content: string;
+}
+
+function readSource(sourcePath: string, maxChars: number): SourceInput {
+	const { meta, body } = parseFront(fs.readFileSync(sourcePath, "utf-8"));
+	let summary = "";
+	let content = body.trim();
+	if (body.includes("## 原文")) {
+		const [head, ...rest] = body.split("## 原文");
+		summary = head.replace("## 摘要", "").trim();
+		content = rest.join("## 原文").trim();
+	}
+	return {
+		title: String(meta.title ?? path.basename(sourcePath, ".md")),
+		url: String(meta.url ?? ""),
+		date: String(meta.date ?? ""),
+		summary,
+		content: content.slice(0, maxChars),
+	};
+}
+
+async function compileSource(
+	sourcePath: string,
+	systemPrompt: string,
+	model: any,
+	maxChars: number,
+	maxTurns: number,
+	wikiDir: string,
+): Promise<{ ok: boolean; ctx: CompileCtx; turns: number; cost: number; tokens: number }> {
+	const ctx: CompileCtx = { root: ROOT, wikiDir, touched: new Map(), finished: false, summary: "" };
+	const agent = new Agent({ initialState: { systemPrompt, model, tools: makeTools(ctx) } });
+
+	let turns = 0;
+	let cost = 0;
+	let tokens = 0;
+	agent.subscribe(async (event) => {
+		if (event.type === "turn_start" && ++turns > maxTurns) {
+			console.error(`  达到 ${maxTurns} 轮上限，中止`);
+			agent.abort();
+		}
+		if (event.type === "tool_execution_start") {
+			console.error(`  [turn ${turns}] ${event.toolName}`);
+		}
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			cost += event.message.usage?.cost?.total ?? 0;
+			tokens += event.message.usage?.totalTokens ?? 0;
+		}
+	});
+
+	const src = readSource(sourcePath, maxChars);
+	const prompt = [
+		`新文章：${src.title}（${src.url}，${src.date}）`,
+		`摘要：${src.summary}`,
+		`正文：`,
+		src.content,
+	].join("\n");
+
+	try {
+		await agent.prompt(prompt);
+		for (let round = 0; round < MAX_REPAIR_ROUNDS && ctx.finished; round++) {
+			const problems = verifyTouched(ctx);
+			if (!problems.length) break;
+			console.error(`  验证器打回（第 ${round + 1} 轮）：${problems.length} 个问题`);
+			ctx.finished = false;
+			await agent.prompt(`验证器发现以下问题，请修复后再次调用 finish：\n${problems.join("\n")}`);
+		}
+	} catch (e) {
+		console.error(`  agent 异常：${e instanceof Error ? e.message : e}`);
+	}
+
+	const ok = ctx.finished && verifyTouched(ctx).length === 0;
+	return { ok, ctx, turns, cost, tokens };
+}
+
+async function main(): Promise<void> {
+	const limit = arg("--limit", 3);
+	const maxTurns = arg("--max-turns", 16);
+	const configPath = path.resolve(argStr("--config", path.join(ROOT, "config.yaml")));
+	const dryRun = process.argv.includes("--dry-run");
+
+	const envPath = path.join(ROOT, ".env");
+	if (fs.existsSync(envPath)) process.loadEnvFile(envPath);
+
+	const cfg = parseYaml(fs.readFileSync(configPath, "utf-8"));
+	const prompts = parseYaml(fs.readFileSync(path.join(ROOT, "prompts.yaml"), "utf-8"));
+	const wikiDir = path.resolve(path.dirname(configPath), cfg.wiki?.dir ?? "wiki");
+	const maxChars = cfg.limits?.max_chars_per_item ?? 6000;
+	const models = createModels();
+	models.setProvider(deepseekProvider());
+	const model = models.getModel("deepseek", cfg.llm.wiki_model ?? cfg.llm.model);
+	if (!model) throw new Error(`pi-ai 不认识模型 ${cfg.llm.wiki_model ?? cfg.llm.model}`);
+
+	const systemPrompt = String(prompts.wiki_agent)
+		.replaceAll("{persona}", String(prompts.persona).trim())
+		.replaceAll("{categories}", CATEGORIES.join(", "))
+		.replaceAll("{max_page_chars}", String(MAX_PAGE_CHARS));
+
+	const pending = pendingSources(wikiDir);
+	const batch = pending.slice(0, limit);
+	console.error(`[wiki-agent] backlog ${pending.length} 篇，本次处理 ${batch.length} 篇`);
+	if (dryRun) {
+		for (const p of batch) console.error(`  ${path.relative(wikiDir, p)}`);
+		return;
+	}
+
+	let totalCost = 0;
+	let totalTokens = 0;
+	for (const [i, sourcePath] of batch.entries()) {
+		const name = path.basename(sourcePath);
+		console.error(`[wiki-agent ${i + 1}/${batch.length}] ${name}`);
+		const { ok, ctx, turns, cost, tokens } = await compileSource(
+			sourcePath, systemPrompt, model, maxChars, maxTurns, wikiDir,
+		);
+		totalCost += cost;
+		totalTokens += tokens;
+		const pages = [...ctx.touched.keys()];
+		if (ok) {
+			markCompiled(sourcePath);
+			appendLog(wikiDir, "ingest", `${readSource(sourcePath, 80).title} -> ${pages.join(", ") || "(无沉淀)"}`);
+			await execFileAsync(
+				"uv",
+				["run", "subscriber", "wiki", "--reindex", "--config", configPath],
+				{ cwd: ROOT },
+			);
+			console.error(`  完成：${ctx.summary}（${turns} 轮，${tokens} tokens，$${cost.toFixed(4)}）`);
+		} else {
+			console.error(`  失败，保持 pending（${turns} 轮，${tokens} tokens，$${cost.toFixed(4)}）`);
+		}
+	}
+	console.error(`[wiki-agent] 合计 ${totalTokens} tokens，$${totalCost.toFixed(4)}`);
+}
+
+main().catch((e) => {
+	console.error(e);
+	process.exit(1);
+});
