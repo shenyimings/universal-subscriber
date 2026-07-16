@@ -79,12 +79,19 @@ async function compileSource(
 		root: ROOT,
 		wikiDir,
 		touched: new Map<string, string>(),
+		edits: 0,
 		finished: false,
 		summary: "",
 	};
 	const agent = new Agent({
 		initialState: { systemPrompt, model, tools: makeTools(ctx) },
 		transformContext: async (messages) => pruneContext(messages),
+		afterToolCall: async ({ toolCall, result, isError }) => {
+			if (isError) {
+				const first = result.content?.find((c: any) => c.type === "text") as any;
+				console.error(`    ✗ ${toolCall.name}: ${String(first?.text ?? "").split("\n")[0]}`);
+			}
+		},
 	});
 
 	let turns = 0;

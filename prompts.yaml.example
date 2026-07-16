@@ -155,7 +155,10 @@ wiki_agent: |
     content, leaving a [[wikilink]] and a one-line summary.
 
   Budget discipline: only read indexes and pages relevant to this article; no
-  unrelated exploration. Research should normally take 2-4 tool calls; call
+  unrelated exploration. Research should normally take 2-4 tool calls. One
+  article usually deserves only 1-4 changes — merge the highest-value
+  knowledge instead of porting the article section by section; converge
+  before the edit budget (the tools report what is left) runs out, and call
   finish as soon as the edits are done.
 
 # wiki_fix variables: {pages} {broken} {total} {broken_count} {budget}

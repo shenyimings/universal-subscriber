@@ -8,7 +8,7 @@ import { type CompileCtx, makeTools } from "../src/tools.ts";
 function tmpCtx(): CompileCtx {
 	const wikiDir = fs.mkdtempSync(path.join(os.tmpdir(), "tools-"));
 	fs.mkdirSync(path.join(wikiDir, "pages"), { recursive: true });
-	return { root: wikiDir, wikiDir, touched: new Map(), finished: false, summary: "" };
+	return { root: wikiDir, wikiDir, touched: new Map(), edits: 0, finished: false, summary: "" };
 }
 
 function tool(ctx: CompileCtx, name: string) {
@@ -67,5 +67,27 @@ test("edit_page 拒绝让超限页面继续膨胀，允许瘦身", async () => {
 
 	const shrunk = await run(ctx, "edit_page", { file: "big.md", old_string: "唯一锚点", new_string: "锚" });
 	assert.match(shrunk, /已替换/);
+	fs.rmSync(ctx.wikiDir, { recursive: true });
+});
+
+test("改动预算：临近上限提示，用完后拒绝", async () => {
+	const ctx = tmpCtx();
+	const page = (i: number) =>
+		`---\ndescription: 页${i}\ncategory: llm-systems\ntags:\n- fuzzing\n- llm-agent\n---\n正文\n`;
+	for (let i = 1; i <= 8; i++) {
+		const r = await run(ctx, "write_page", { file: `p${i}.md`, content: page(i) });
+		if (i < 8) assert.doesNotMatch(r, /改动预算/);
+		else assert.match(r, /改动预算 8\/10/);
+	}
+	await run(ctx, "write_page", { file: "p9.md", content: page(9) });
+	await run(ctx, "write_page", { file: "p10.md", content: page(10) });
+	await assert.rejects(
+		run(ctx, "write_page", { file: "p11.md", content: page(11) }),
+		/预算.*已用完.*finish/,
+	);
+	await assert.rejects(
+		run(ctx, "edit_page", { file: "p1.md", old_string: "正文", new_string: "改" }),
+		/预算.*已用完/,
+	);
 	fs.rmSync(ctx.wikiDir, { recursive: true });
 });

@@ -28,8 +28,27 @@ export interface CompileCtx {
 	wikiDir: string;
 	/** 本次被写过的页面 -> 首次触碰前的原始内容（新页面为 ""）。用于回滚。 */
 	touched: Map<string, string>;
+	/** 本次成功的 edit_page/write_page 次数；预算在 harness 强制，不指望模型自律。 */
+	edits: number;
 	finished: boolean;
 	summary: string;
+}
+
+/** 每篇源的改动预算：超过说明模型不肯收敛，强制它 finish。 */
+export const EDIT_BUDGET = 10;
+
+function spendEdit(ctx: CompileCtx): string {
+	ctx.edits += 1;
+	if (ctx.edits >= EDIT_BUDGET - 2) {
+		return `（改动预算 ${ctx.edits}/${EDIT_BUDGET}：请收尾，完成必要改动后立即 finish）`;
+	}
+	return "";
+}
+
+function checkEditBudget(ctx: CompileCtx): void {
+	if (ctx.edits >= EDIT_BUDGET) {
+		throw new Error(`本次改动预算（${EDIT_BUDGET} 次）已用完，不能再改动页面，请立即调用 finish`);
+	}
 }
 
 function pagePath(ctx: CompileCtx, file: string): string {
@@ -101,6 +120,7 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			new_string: Type.String({ description: "替换后的内容" }),
 		}),
 		execute: async (_id, params) => {
+			checkEditBudget(ctx);
 			const p = pagePath(ctx, params.file);
 			if (!fs.existsSync(p)) throw new Error(`页面不存在：${params.file}`);
 			const before = fs.readFileSync(p, "utf-8");
@@ -116,8 +136,11 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			}
 			recordTouch(ctx, params.file, before);
 			fs.writeFileSync(p, after);
+			const note = spendEdit(ctx);
 			const problems = validatePage(params.file, after);
-			return text(problems.length ? `已替换，但存在问题：\n${problems.join("\n")}` : "已替换。");
+			return text(
+				problems.length ? `已替换，但存在问题：\n${problems.join("\n")}${note}` : `已替换。${note}`,
+			);
 		},
 	};
 
@@ -131,6 +154,7 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			content: Type.String({ description: "页面完整内容" }),
 		}),
 		execute: async (_id, params) => {
+			checkEditBudget(ctx);
 			const p = pagePath(ctx, params.file);
 			const originalBefore = fs.existsSync(p) ? fs.readFileSync(p, "utf-8") : "";
 			if (originalBefore.length > MAX_PAGE_CHARS) {
@@ -145,7 +169,8 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			if (problems.length) throw new Error(`页面校验未通过：\n${problems.join("\n")}`);
 			recordTouch(ctx, params.file, originalBefore);
 			fs.writeFileSync(p, params.content);
-			return text(originalBefore ? "已重写。" : "已创建。");
+			const note = spendEdit(ctx);
+			return text(`${originalBefore ? "已重写。" : "已创建。"}${note}`);
 		},
 	};
 
