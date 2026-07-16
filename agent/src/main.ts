@@ -15,6 +15,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { parse as parseYaml } from "yaml";
 import { type CompileCtx, makeTools } from "./tools.ts";
+import { rollbackTouched, verifyTouched } from "./verify.ts";
 import {
 	appendLog,
 	CATEGORIES,
@@ -22,7 +23,6 @@ import {
 	MAX_PAGE_CHARS,
 	parseFront,
 	pendingSources,
-	validatePage,
 } from "./wiki.ts";
 
 const execFileAsync = promisify(execFile);
@@ -38,21 +38,6 @@ function arg(name: string, fallback: number): number {
 function argStr(name: string, fallback: string): string {
 	const i = process.argv.indexOf(name);
 	return i >= 0 ? process.argv[i + 1] : fallback;
-}
-
-/** 验证器：本次触碰过的页面必须全部合规，且超限页面不许继续膨胀。 */
-function verifyTouched(ctx: CompileCtx): string[] {
-	const problems: string[] = [];
-	for (const [file, sizeBefore] of ctx.touched) {
-		const p = path.join(ctx.wikiDir, "pages", file);
-		if (!fs.existsSync(p)) continue;
-		const content = fs.readFileSync(p, "utf-8");
-		problems.push(...validatePage(file, content));
-		if (content.length > MAX_PAGE_CHARS && content.length > sizeBefore) {
-			problems.push(`${file}: 页面 ${content.length} 字符，超过 ${MAX_PAGE_CHARS} 上限且仍在膨胀，请拆分`);
-		}
-	}
-	return problems;
 }
 
 interface SourceInput {
@@ -89,7 +74,13 @@ async function compileSource(
 	maxTurns: number,
 	wikiDir: string,
 ): Promise<{ ok: boolean; ctx: CompileCtx; turns: number; cost: number; tokens: number }> {
-	const ctx: CompileCtx = { root: ROOT, wikiDir, touched: new Map(), finished: false, summary: "" };
+	const ctx: CompileCtx = {
+		root: ROOT,
+		wikiDir,
+		touched: new Map<string, string>(),
+		finished: false,
+		summary: "",
+	};
 	const agent = new Agent({ initialState: { systemPrompt, model, tools: makeTools(ctx) } });
 
 	let turns = 0;
@@ -120,7 +111,7 @@ async function compileSource(
 	try {
 		await agent.prompt(prompt);
 		for (let round = 0; round < MAX_REPAIR_ROUNDS && ctx.finished; round++) {
-			const problems = verifyTouched(ctx);
+			const problems = verifyTouched(ctx.wikiDir, ctx.touched);
 			if (!problems.length) break;
 			console.error(`  验证器打回（第 ${round + 1} 轮）：${problems.length} 个问题`);
 			ctx.finished = false;
@@ -130,13 +121,13 @@ async function compileSource(
 		console.error(`  agent 异常：${e instanceof Error ? e.message : e}`);
 	}
 
-	const ok = ctx.finished && verifyTouched(ctx).length === 0;
+	const ok = ctx.finished && verifyTouched(ctx.wikiDir, ctx.touched).length === 0;
 	return { ok, ctx, turns, cost, tokens };
 }
 
 async function main(): Promise<void> {
 	const limit = arg("--limit", 3);
-	const maxTurns = arg("--max-turns", 16);
+	const maxTurns = arg("--max-turns", 24);
 	const configPath = path.resolve(argStr("--config", path.join(ROOT, "config.yaml")));
 	const dryRun = process.argv.includes("--dry-run");
 
@@ -186,7 +177,10 @@ async function main(): Promise<void> {
 			);
 			console.error(`  完成：${ctx.summary}（${turns} 轮，${tokens} tokens，$${cost.toFixed(4)}）`);
 		} else {
-			console.error(`  失败，保持 pending（${turns} 轮，${tokens} tokens，$${cost.toFixed(4)}）`);
+			rollbackTouched(ctx.wikiDir, ctx.touched);
+			console.error(
+				`  失败，回滚 ${pages.length} 个页面并保持 pending（${turns} 轮，${tokens} tokens，$${cost.toFixed(4)}）`,
+			);
 		}
 	}
 	console.error(`[wiki-agent] 合计 ${totalTokens} tokens，$${totalCost.toFixed(4)}`);

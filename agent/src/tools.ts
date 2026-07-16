@@ -14,8 +14,8 @@ const FETCH_URL_MAX_CHARS = 8_000;
 export interface CompileCtx {
 	root: string; // subscriber 仓库根目录
 	wikiDir: string;
-	/** 本次被写过的页面 -> 首次触碰前的字符数（新页面为 0） */
-	touched: Map<string, number>;
+	/** 本次被写过的页面 -> 首次触碰前的原始内容（新页面为 ""）。用于回滚。 */
+	touched: Map<string, string>;
 	finished: boolean;
 	summary: string;
 }
@@ -27,8 +27,8 @@ function pagePath(ctx: CompileCtx, file: string): string {
 	return path.join(ctx.wikiDir, "pages", file);
 }
 
-function recordTouch(ctx: CompileCtx, file: string, sizeBefore: number): void {
-	if (!ctx.touched.has(file)) ctx.touched.set(file, sizeBefore);
+function recordTouch(ctx: CompileCtx, file: string, originalBefore: string): void {
+	if (!ctx.touched.has(file)) ctx.touched.set(file, originalBefore);
 }
 
 function text(s: string) {
@@ -86,7 +86,7 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			if (count === 0) throw new Error("old_string 在页面中不存在，请先 read_page 核对原文");
 			if (count > 1) throw new Error(`old_string 出现 ${count} 次，请扩大上下文使其唯一`);
 			const after = before.replace(params.old_string, params.new_string);
-			recordTouch(ctx, params.file, before.length);
+			recordTouch(ctx, params.file, before);
 			fs.writeFileSync(p, after);
 			const problems = validatePage(params.file, after);
 			return text(problems.length ? `已替换，但存在问题：\n${problems.join("\n")}` : "已替换。");
@@ -104,20 +104,20 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		}),
 		execute: async (_id, params) => {
 			const p = pagePath(ctx, params.file);
-			const sizeBefore = fs.existsSync(p) ? fs.readFileSync(p, "utf-8").length : 0;
-			if (sizeBefore > MAX_PAGE_CHARS) {
+			const originalBefore = fs.existsSync(p) ? fs.readFileSync(p, "utf-8") : "";
+			if (originalBefore.length > MAX_PAGE_CHARS) {
 				throw new Error(
 					`${params.file} 已超过 ${MAX_PAGE_CHARS} 字符上限，禁止整页重写；请用 edit_page 增量修改，或拆分出新页面`,
 				);
 			}
-			if (params.content.length > MAX_PAGE_CHARS && params.content.length > sizeBefore) {
+			if (params.content.length > MAX_PAGE_CHARS && params.content.length > originalBefore.length) {
 				throw new Error(`内容超过 ${MAX_PAGE_CHARS} 字符上限，请精简或拆分`);
 			}
 			const problems = validatePage(params.file, params.content);
 			if (problems.length) throw new Error(`页面校验未通过：\n${problems.join("\n")}`);
-			recordTouch(ctx, params.file, sizeBefore);
+			recordTouch(ctx, params.file, originalBefore);
 			fs.writeFileSync(p, params.content);
-			return text(sizeBefore ? "已重写。" : "已创建。");
+			return text(originalBefore ? "已重写。" : "已创建。");
 		},
 	};
 
