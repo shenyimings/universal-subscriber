@@ -108,6 +108,12 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			if (count === 0) throw new Error("old_string 在页面中不存在，请先 read_page 核对原文");
 			if (count > 1) throw new Error(`old_string 出现 ${count} 次，请扩大上下文使其唯一`);
 			const after = before.replace(params.old_string, params.new_string);
+			if (before.length > MAX_PAGE_CHARS && after.length > before.length) {
+				throw new Error(
+					`${params.file} 已超过 ${MAX_PAGE_CHARS} 字符上限，不能再增长；` +
+						"请把新内容放进拆分出的新页面（write_page），或先用 edit_page 删减/迁出旧内容再合并",
+				);
+			}
 			recordTouch(ctx, params.file, before);
 			fs.writeFileSync(p, after);
 			const problems = validatePage(params.file, after);

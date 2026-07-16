@@ -51,3 +51,21 @@ test("read_page 大页面切片返回，首片带大纲，offset 续读", async 
 	assert.match(tail, /已到末尾/);
 	fs.rmSync(ctx.wikiDir, { recursive: true });
 });
+
+test("edit_page 拒绝让超限页面继续膨胀，允许瘦身", async () => {
+	const ctx = tmpCtx();
+	const big = `---\ndescription: 大页\ncategory: llm-systems\ntags:\n- fuzzing\n- llm-agent\n---\n唯一锚点\n${"填".repeat(41000)}`;
+	fs.writeFileSync(path.join(ctx.wikiDir, "pages", "big.md"), big);
+
+	await assert.rejects(
+		run(ctx, "edit_page", { file: "big.md", old_string: "唯一锚点", new_string: "唯一锚点加了更多内容" }),
+		/不能再增长/,
+	);
+	// 增长被拒后页面未被改动、未记入 touched
+	assert.equal(fs.readFileSync(path.join(ctx.wikiDir, "pages", "big.md"), "utf-8"), big);
+	assert.equal(ctx.touched.size, 0);
+
+	const shrunk = await run(ctx, "edit_page", { file: "big.md", old_string: "唯一锚点", new_string: "锚" });
+	assert.match(shrunk, /已替换/);
+	fs.rmSync(ctx.wikiDir, { recursive: true });
+});

@@ -14,6 +14,7 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import { createModels } from "@earendil-works/pi-ai";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { parse as parseYaml } from "yaml";
+import { pruneContext } from "./context.ts";
 import { type CompileCtx, makeTools } from "./tools.ts";
 import { rollbackTouched, verifyTouched } from "./verify.ts";
 import {
@@ -81,14 +82,18 @@ async function compileSource(
 		finished: false,
 		summary: "",
 	};
-	const agent = new Agent({ initialState: { systemPrompt, model, tools: makeTools(ctx) } });
+	const agent = new Agent({
+		initialState: { systemPrompt, model, tools: makeTools(ctx) },
+		transformContext: async (messages) => pruneContext(messages),
+	});
 
 	let turns = 0;
+	let turnAllowance = maxTurns;
 	let cost = 0;
 	let tokens = 0;
 	agent.subscribe(async (event) => {
-		if (event.type === "turn_start" && ++turns > maxTurns) {
-			console.error(`  达到 ${maxTurns} 轮上限，中止`);
+		if (event.type === "turn_start" && ++turns > turnAllowance) {
+			console.error(`  达到 ${turnAllowance} 轮上限，中止`);
 			agent.abort();
 		}
 		if (event.type === "tool_execution_start") {
@@ -115,6 +120,7 @@ async function compileSource(
 			if (!problems.length) break;
 			console.error(`  验证器打回（第 ${round + 1} 轮）：${problems.length} 个问题`);
 			ctx.finished = false;
+			turnAllowance = turns + 8; // 修复轮需要自己的预算，否则打回即必死
 			await agent.prompt(`验证器发现以下问题，请修复后再次调用 finish：\n${problems.join("\n")}`);
 		}
 	} catch (e) {
