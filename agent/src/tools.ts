@@ -10,6 +10,18 @@ import { CATEGORIES, FILE_NAME_RE, MAX_PAGE_CHARS, validatePage } from "./wiki.t
 const execFileAsync = promisify(execFile);
 
 const FETCH_URL_MAX_CHARS = 8_000;
+/** read_page 单次返回的上限：大页面按切片迭代读取，控制每轮进入上下文的量。 */
+const READ_PAGE_MAX_CHARS = 16_000;
+
+/** 大页面的章节大纲：标题行 + 字符位置，供模型跳读相关切片。 */
+function pageOutline(content: string): string {
+	const lines: string[] = [];
+	const re = /^#{1,3} .*$/gm;
+	for (const m of content.matchAll(re)) {
+		lines.push(`${m[0]} @${m.index}`);
+	}
+	return lines.join("\n") || "（无标题结构）";
+}
 
 export interface CompileCtx {
 	root: string; // subscriber 仓库根目录
@@ -57,14 +69,24 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 	const readPage: AgentTool<any> = {
 		name: "read_page",
 		label: "Read page",
-		description: "读取一个 wiki 页面的完整内容",
+		description:
+			"读取一个 wiki 页面。超过读取上限的大页面按切片返回：首次调用（不带 offset）返回章节大纲（含字符位置）和开头切片，之后按大纲用 offset 只读需要的部分，不要顺序读完整页",
 		parameters: Type.Object({
 			file: Type.String({ description: "页面文件名，如 llm-agent-harness.md" }),
+			offset: Type.Optional(Type.Number({ description: "起始字符位置（大页面续读/跳读用）" })),
 		}),
 		execute: async (_id, params) => {
 			const p = pagePath(ctx, params.file);
 			if (!fs.existsSync(p)) throw new Error(`页面不存在：${params.file}`);
-			return text(fs.readFileSync(p, "utf-8"));
+			const content = fs.readFileSync(p, "utf-8");
+			if (content.length <= READ_PAGE_MAX_CHARS && !params.offset) return text(content);
+			const offset = Math.max(0, Math.min(params.offset ?? 0, content.length));
+			const end = Math.min(offset + READ_PAGE_MAX_CHARS, content.length);
+			const head = `（页面共 ${content.length} 字符，本次返回第 ${offset}–${end} 字符${
+				end < content.length ? `，续读用 offset=${end}` : "，已到末尾"
+			}）`;
+			const outline = offset === 0 ? `\n章节定位（标题 @字符位置）：\n${pageOutline(content)}\n` : "";
+			return text(`${head}${outline}\n${content.slice(offset, end)}`);
 		},
 	};
 

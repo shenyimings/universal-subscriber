@@ -128,6 +128,12 @@ wiki_agent: |
   - read_page a target before touching it; update existing pages with
     edit_page (insert sections, rewrite paragraphs) instead of full rewrites;
     write_page is only for new pages or rewriting small ones;
+  - Large pages come back in slices (the first call includes a heading
+    outline with character positions). Do not read a big page front to
+    back: use the outline to decide which sections the new knowledge
+    belongs to, read only those slices via offset, and process them one at
+    a time — read a slice, decide whether to edit_page, move on — keeping
+    the context in a healthy range;
   - If the article body is thin (just a link or a couple of sentences),
     fetch_url the link and read the full text before judging;
   - If nothing is worth keeping, touch no pages and finish with the reason.
