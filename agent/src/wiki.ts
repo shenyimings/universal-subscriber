@@ -102,6 +102,7 @@ export function validatePage(file: string, content: string): string[] {
 	}
 	for (const m of body.matchAll(WIKILINK_RE)) {
 		const target = m[1];
+		if (target.startsWith("#")) continue; // Obsidian 页内锚点链接
 		if (!/^[a-z0-9][a-z0-9-]*$/.test(target)) {
 			problems.push(`${file}: wikilink [[${target}]] 必须是小写英文连字符的页面名`);
 		}
