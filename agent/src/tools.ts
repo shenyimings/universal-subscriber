@@ -1,6 +1,7 @@
 /** wiki 编译 agent 的工具集。写入类工具在代码侧做硬校验，不信任模型自觉。 */
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -8,6 +9,12 @@ import { Type } from "typebox";
 import { CATEGORIES, FILE_NAME_RE, MAX_PAGE_CHARS, validatePage } from "./wiki.ts";
 
 const execFileAsync = promisify(execFile);
+
+/** systemd 环境的 PATH 不含 ~/.local/bin，spawn "uv" 会 ENOENT，这里解析绝对路径。 */
+export const UV_BIN = (() => {
+	const local = path.join(os.homedir(), ".local", "bin", "uv");
+	return fs.existsSync(local) ? local : "uv";
+})();
 
 const FETCH_URL_MAX_CHARS = 8_000;
 /** read_page 单次返回的上限：大页面按切片迭代读取，控制每轮进入上下文的量。 */
@@ -183,7 +190,7 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		}),
 		execute: async (_id, params, signal) => {
 			const { stdout } = await execFileAsync(
-				"uv",
+				UV_BIN,
 				["run", "python", "scripts/extract_url.py", params.url],
 				{ cwd: ctx.root, timeout: 60_000, maxBuffer: 4 * 1024 * 1024, signal },
 			);

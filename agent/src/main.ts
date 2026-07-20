@@ -15,7 +15,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { parse as parseYaml } from "yaml";
 import { pruneContext } from "./context.ts";
-import { type CompileCtx, makeTools } from "./tools.ts";
+import { type CompileCtx, makeTools, UV_BIN } from "./tools.ts";
 import { rollbackTouched, verifyTouched } from "./verify.ts";
 import {
 	appendLog,
@@ -185,11 +185,16 @@ async function main(): Promise<void> {
 			for (const f of pages) appendSourceRef(wikiDir, f, sourcePath);
 			markCompiled(sourcePath, pages);
 			appendLog(wikiDir, "ingest", `${readSource(sourcePath, 80).title} -> ${pages.join(", ") || "(无沉淀)"}`);
-			await execFileAsync(
-				"uv",
-				["run", "subscriber", "wiki", "--reindex", "--config", configPath],
-				{ cwd: ROOT },
-			);
+			try {
+				await execFileAsync(
+					UV_BIN,
+					["run", "subscriber", "wiki", "--reindex", "--config", configPath],
+					{ cwd: ROOT },
+				);
+			} catch (e) {
+				// reindex 失败不该毁掉整批：索引下次运行会重建
+				console.error(`  reindex 失败：${e instanceof Error ? e.message : e}`);
+			}
 			console.error(`  完成：${ctx.summary}（${turns} 轮，${tokens} tokens，$${cost.toFixed(4)}）`);
 		} else {
 			rollbackTouched(ctx.wikiDir, ctx.touched);
