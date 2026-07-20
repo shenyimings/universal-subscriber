@@ -147,7 +147,30 @@ class TestCompileSource:
         assert "知识内容" in page_body
         src_meta, _ = parse_front(src.read_text())
         assert src_meta["compiled"] is True
+        assert src_meta["pages"] == ["topic.md"]
+        assert "- [T](../sources/2026/07/a.md)（Src，2026-07-01）" in page_body
+        assert "## 来源" in page_body
         assert "ingest | T" in (tmp_path / "log.md").read_text()
+
+    @patch("subscriber.wiki._chat")
+    def test_source_ref_deduped_on_recompile(self, mock_chat, tmp_path):
+        src = _write_source(tmp_path)
+        mock_chat.side_effect = [
+            '[{"file": "topic.md", "action": "create", "focus": "要点",'
+            ' "category": "ai-security", "tags": ["fuzzing"]}]',
+            "---\ndescription: 主题页\n---\n\n知识内容\n",
+        ]
+        compile_source(src, tmp_path, LLM_CFG, PROMPTS, 6000)
+        first = (tmp_path / "pages" / "topic.md").read_text()
+        mock_chat.side_effect = [
+            '[{"file": "topic.md", "action": "update", "focus": "要点",'
+            ' "category": "ai-security", "tags": ["fuzzing"]}]',
+            first,  # 模型按提示原样保留旧的来源段
+        ]
+        compile_source(src, tmp_path, LLM_CFG, PROMPTS, 6000)
+        text = (tmp_path / "pages" / "topic.md").read_text()
+        assert text.count("../sources/2026/07/a.md") == 1
+        assert text.count("## 来源") == 1
 
     @patch("subscriber.wiki._chat")
     def test_manual_heading_numbers_stripped(self, mock_chat, tmp_path):

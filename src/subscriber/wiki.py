@@ -153,6 +153,34 @@ def _split_source_body(body: str) -> tuple[str, str]:
     return "", body.strip()
 
 
+_SOURCE_SECTION = "## 来源"
+
+
+def append_source_ref(page_path: Path, src_path: Path, wiki_dir: Path, src_meta: dict) -> None:
+    """在页面末尾的「来源」段登记本次编译用到的归档源（代码侧维护，模型不写）。"""
+    rel = "../" + src_path.relative_to(wiki_dir).as_posix()
+    text = page_path.read_text()
+    if rel in text:
+        return
+    line = f"- [{src_meta.get('title', src_path.stem)}]({rel})"
+    tail = "，".join(str(src_meta[k]) for k in ("source", "date") if src_meta.get(k))
+    if tail:
+        line += f"（{tail}）"
+    i = text.rfind(_SOURCE_SECTION)
+    if i >= 0:
+        sect = text[i + len(_SOURCE_SECTION):]
+        m = re.search(r"^#{1,6} ", sect, flags=re.MULTILINE)
+        cut = m.start() if m else len(sect)
+        text = (
+            text[: i + len(_SOURCE_SECTION)]
+            + sect[:cut].rstrip() + f"\n{line}\n"
+            + sect[cut:]
+        )
+    else:
+        text = text.rstrip() + f"\n\n{_SOURCE_SECTION}\n\n{line}\n"
+    page_path.write_text(text)
+
+
 def compile_source(
     src_path: Path, wiki_dir: Path, llm_cfg: dict, prompts: dict, max_chars: int
 ) -> list[str]:
@@ -205,10 +233,13 @@ def compile_source(
             page_meta["tags"] = item["tags"]
         page_meta["updated"] = date.today().isoformat()
         page_path.write_text(dump_front(page_meta, page_body))
+        append_source_ref(page_path, src_path, wiki_dir, meta)
         touched.append(item["file"])
 
     # mark the source compiled so it never flows through the LLM again
     meta["compiled"] = True
+    if touched:
+        meta["pages"] = sorted(set(meta.get("pages") or []) | set(touched))
     src_path.write_text(dump_front(meta, body))
     detail = f"{meta.get('title', src_path.stem)} -> {', '.join(touched) or '(无沉淀)'}"
     append_log(wiki_dir, "ingest", detail)

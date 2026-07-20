@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import {
+	appendSourceRef,
 	dumpFront,
 	markCompiled,
 	parseFront,
@@ -75,5 +76,37 @@ test("pendingSources 按 date 排序且跳过已编译", () => {
 	const { meta, body } = parseFront(fs.readFileSync(path.join(src, "b.md"), "utf-8"));
 	assert.equal(meta.compiled, true);
 	assert.equal(body, "正文");
+	fs.rmSync(dir, { recursive: true });
+});
+
+test("markCompiled 合并 pages 反向链接", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-"));
+	const src = path.join(dir, "s.md");
+	fs.writeFileSync(src, "---\ntitle: t\ncompiled: false\npages:\n- old.md\n---\n正文");
+	markCompiled(src, ["new.md", "old.md"]);
+	const { meta } = parseFront(fs.readFileSync(src, "utf-8"));
+	assert.deepEqual(meta.pages, ["new.md", "old.md"]);
+	fs.rmSync(dir, { recursive: true });
+});
+
+test("appendSourceRef 建段、去重、追加", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-"));
+	fs.mkdirSync(path.join(dir, "pages"), { recursive: true });
+	const srcDir = path.join(dir, "sources", "2026", "07");
+	fs.mkdirSync(srcDir, { recursive: true });
+	const s1 = path.join(srcDir, "one.md");
+	const s2 = path.join(srcDir, "two.md");
+	fs.writeFileSync(s1, "---\ntitle: 第一篇\nsource: Blog A\ndate: '2026-07-01'\n---\n正文");
+	fs.writeFileSync(s2, "---\ntitle: 第二篇\n---\n正文");
+	fs.writeFileSync(path.join(dir, "pages", "p.md"), `${PAGE}\n## 相关页面\n\n- [[llm-agent-harness]]\n`);
+
+	appendSourceRef(dir, "p.md", s1);
+	appendSourceRef(dir, "p.md", s1); // 重复登记应被去重
+	appendSourceRef(dir, "p.md", s2);
+	const text = fs.readFileSync(path.join(dir, "pages", "p.md"), "utf-8");
+	assert.equal(text.split("## 来源").length, 2);
+	assert.equal(text.split("../sources/2026/07/one.md").length, 2);
+	assert.match(text, /- \[第一篇\]\(\.\.\/sources\/2026\/07\/one\.md\)（Blog A，2026-07-01）/);
+	assert.match(text, /- \[第二篇\]\(\.\.\/sources\/2026\/07\/two\.md\)\n/);
 	fs.rmSync(dir, { recursive: true });
 });

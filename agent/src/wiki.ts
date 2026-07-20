@@ -60,11 +60,43 @@ function walkMd(dir: string): string[] {
 	return out;
 }
 
-export function markCompiled(sourcePath: string): void {
+export function markCompiled(sourcePath: string, pages: string[] = []): void {
 	const text = fs.readFileSync(sourcePath, "utf-8");
 	const { meta, body } = parseFront(text);
 	meta.compiled = true;
+	if (pages.length) {
+		const prev = Array.isArray(meta.pages) ? meta.pages.map(String) : [];
+		meta.pages = [...new Set([...prev, ...pages])].sort();
+	}
 	fs.writeFileSync(sourcePath, dumpFront(meta, body));
+}
+
+const SOURCE_SECTION = "## 来源";
+
+/** 在页面末尾的「## 来源」段登记本次编译用到的归档源（代码侧维护，模型不写）。 */
+export function appendSourceRef(wikiDir: string, pageFile: string, sourcePath: string): void {
+	const rel = `../${path.relative(wikiDir, sourcePath).split(path.sep).join("/")}`;
+	const p = path.join(wikiDir, "pages", pageFile);
+	if (!fs.existsSync(p)) return;
+	let text = fs.readFileSync(p, "utf-8");
+	if (text.includes(rel)) return;
+	const { meta } = parseFront(fs.readFileSync(sourcePath, "utf-8"));
+	let line = `- [${meta.title ?? path.basename(sourcePath, ".md")}](${rel})`;
+	const tail = [meta.source, meta.date].filter(Boolean).join("，");
+	if (tail) line += `（${tail}）`;
+	const i = text.lastIndexOf(SOURCE_SECTION);
+	if (i >= 0) {
+		const sect = text.slice(i + SOURCE_SECTION.length);
+		const next = /^#{1,6} /m.exec(sect);
+		const cut = next ? next.index : sect.length;
+		text =
+			text.slice(0, i + SOURCE_SECTION.length) +
+			`${sect.slice(0, cut).trimEnd()}\n${line}\n` +
+			sect.slice(cut);
+	} else {
+		text = `${text.trimEnd()}\n\n${SOURCE_SECTION}\n\n${line}\n`;
+	}
+	fs.writeFileSync(p, text);
 }
 
 export function appendLog(wikiDir: string, action: string, detail: string): void {

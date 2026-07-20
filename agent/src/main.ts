@@ -19,6 +19,7 @@ import { type CompileCtx, makeTools } from "./tools.ts";
 import { rollbackTouched, verifyTouched } from "./verify.ts";
 import {
 	appendLog,
+	appendSourceRef,
 	CATEGORIES,
 	markCompiled,
 	MAX_PAGE_CHARS,
@@ -181,7 +182,8 @@ async function main(): Promise<void> {
 		totalTokens += tokens;
 		const pages = [...ctx.touched.keys()];
 		if (ok) {
-			markCompiled(sourcePath);
+			for (const f of pages) appendSourceRef(wikiDir, f, sourcePath);
+			markCompiled(sourcePath, pages);
 			appendLog(wikiDir, "ingest", `${readSource(sourcePath, 80).title} -> ${pages.join(", ") || "(无沉淀)"}`);
 			await execFileAsync(
 				"uv",
