@@ -41,6 +41,9 @@ def main() -> None:
         "--fix", action="store_true", help="wiki: 与 --lint 连用，先做一轮坏链修复"
     )
     parser.add_argument("--limit", type=int, help="wiki: 本次最多编译几篇")
+    parser.add_argument(
+        "--reindex", action="store_true", help="wiki: 只重建 index.md（供 agent 调用）"
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve()
@@ -56,8 +59,11 @@ def main() -> None:
     wiki_dir = root / cfg.get("wiki", {}).get("dir", "wiki")
 
     if args.command == "wiki":
-        from .wiki import compile_wiki, fix_wikilinks, lint_wiki
+        from .wiki import compile_wiki, fix_wikilinks, lint_wiki, rebuild_index
 
+        if args.reindex:
+            rebuild_index(wiki_dir)
+            return
         if args.lint:
             if args.fix:
                 fix_wikilinks(wiki_dir, cfg["llm"], prompts)

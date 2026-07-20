@@ -1,0 +1,18 @@
+{
+  "name": "subscriber-wiki-agent",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "compile": "node src/main.ts",
+    "test": "node --test 'test/*.test.ts'"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.80.7",
+    "@earendil-works/pi-ai": "0.80.7",
+    "typebox": "1.1.38",
+    "yaml": "2.9.0"
+  }
+}
