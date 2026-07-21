@@ -4,7 +4,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from subscriber.fetch import Update, fetch_rss, fetch_page, fetch_inbox, fetch_source
+from subscriber.fetch import (
+    Update,
+    fetch_and_extract,
+    fetch_rss,
+    fetch_page,
+    fetch_inbox,
+    fetch_source,
+)
 
 
 SAMPLE_RSS = """<?xml version="1.0" encoding="UTF-8"?>
@@ -40,8 +47,9 @@ def state(tmp_path):
 
 
 class TestFetchRss:
+    @patch("subscriber.fetch.fetch_and_extract", side_effect=Exception("no network in tests"))
     @patch("subscriber.fetch.http_get")
-    def test_new_items_returned(self, mock_get, state):
+    def test_new_items_returned(self, mock_get, mock_extract, state):
         mock_get.side_effect = lambda url: SAMPLE_RSS
         source = {"name": "test", "type": "rss", "url": "https://example.com/feed"}
         updates = fetch_rss(source, state, max_items=5)
@@ -49,8 +57,9 @@ class TestFetchRss:
         assert all(u.kind == "article" for u in updates)
         assert updates[0].title == "Post A"
 
+    @patch("subscriber.fetch.fetch_and_extract", side_effect=Exception("no network in tests"))
     @patch("subscriber.fetch.http_get")
-    def test_max_items_limit(self, mock_get, state):
+    def test_max_items_limit(self, mock_get, mock_extract, state):
         mock_get.side_effect = lambda url: SAMPLE_RSS
         source = {"name": "test", "type": "rss", "url": "https://example.com/feed"}
         updates = fetch_rss(source, state, max_items=1)
@@ -60,8 +69,9 @@ class TestFetchRss:
         assert state.is_seen("test", "b")
         assert state.is_seen("test", "c")
 
+    @patch("subscriber.fetch.fetch_and_extract", side_effect=Exception("no network in tests"))
     @patch("subscriber.fetch.http_get")
-    def test_already_seen_skipped(self, mock_get, state):
+    def test_already_seen_skipped(self, mock_get, mock_extract, state):
         state.mark_seen("test", "a")
         state.mark_seen("test", "b")
         mock_get.side_effect = lambda url: SAMPLE_RSS
@@ -70,28 +80,34 @@ class TestFetchRss:
         assert len(updates) == 1
         assert updates[0].title == "Post C"
 
+    @patch("subscriber.fetch.fetch_and_extract", return_value="full article text")
+    @patch("subscriber.fetch.http_get")
+    def test_entry_link_extracted(self, mock_get, mock_extract, state):
+        mock_get.side_effect = lambda url: SAMPLE_RSS
+        source = {"name": "test", "type": "rss", "url": "https://example.com/feed"}
+        updates = fetch_rss(source, state, max_items=1)
+        assert updates[0].content == "full article text"
+        mock_extract.assert_called_once_with("https://example.com/a")
+
 
 class TestFetchPage:
-    @patch("subscriber.fetch.extract_text", return_value="page content v1")
-    @patch("subscriber.fetch.http_get", return_value="<html>v1</html>")
-    def test_first_run_baseline(self, mock_get, mock_extract, state):
+    @patch("subscriber.fetch.fetch_and_extract", return_value="page content v1")
+    def test_first_run_baseline(self, mock_extract, state):
         source = {"name": "pg", "type": "page", "url": "https://example.com"}
         updates = fetch_page(source, state)
         assert updates == []
         assert state.get_snapshot("pg") == "page content v1"
 
-    @patch("subscriber.fetch.extract_text")
-    @patch("subscriber.fetch.http_get", return_value="<html></html>")
-    def test_no_change(self, mock_get, mock_extract, state):
+    @patch("subscriber.fetch.fetch_and_extract")
+    def test_no_change(self, mock_extract, state):
         mock_extract.return_value = "same"
         source = {"name": "pg", "type": "page", "url": "https://example.com"}
         fetch_page(source, state)  # baseline
         updates = fetch_page(source, state)
         assert updates == []
 
-    @patch("subscriber.fetch.extract_text")
-    @patch("subscriber.fetch.http_get", return_value="<html></html>")
-    def test_change_detected(self, mock_get, mock_extract, state):
+    @patch("subscriber.fetch.fetch_and_extract")
+    def test_change_detected(self, mock_extract, state):
         source = {"name": "pg", "type": "page", "url": "https://example.com"}
         mock_extract.return_value = "old content"
         fetch_page(source, state)
@@ -101,9 +117,8 @@ class TestFetchPage:
         assert updates[0].kind == "page_change"
         assert "+new content" in updates[0].content
 
-    @patch("subscriber.fetch.extract_text", return_value=None)
-    @patch("subscriber.fetch.http_get", return_value="<html></html>")
-    def test_empty_extract_raises(self, mock_get, mock_extract, state):
+    @patch("subscriber.fetch.fetch_and_extract", return_value=None)
+    def test_empty_extract_raises(self, mock_extract, state):
         source = {"name": "pg", "type": "page", "url": "https://example.com"}
         with pytest.raises(RuntimeError, match="正文提取为空"):
             fetch_page(source, state)
@@ -157,10 +172,9 @@ class TestFetchInbox:
         assert len(updates) == 0
 
     @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
-    @patch("subscriber.fetch.extract_text", return_value="extracted article")
-    @patch("subscriber.fetch.http_get", return_value="<html>page</html>")
+    @patch("subscriber.fetch.fetch_and_extract", return_value="extracted article")
     @patch("subscriber.fetch._agentmail_client")
-    def test_url_only_body_fetched(self, mock_cls, mock_get, mock_extract, state):
+    def test_url_only_body_fetched(self, mock_cls, mock_extract, state):
         client = mock_cls.return_value  # _agentmail_client(key) returns this
         resp = MagicMock()
         resp.messages = [_make_msg("m1", "Link", preview="https://example.com/article")]
@@ -184,6 +198,53 @@ class TestFetchInbox:
         # all 5 should be marked seen
         for i in range(5):
             assert state.is_seen("inbox", f"m{i}")
+
+
+def _blank_pdf_bytes() -> bytes:
+    """A structurally valid but textless PDF, for extractor plumbing tests."""
+    import io
+
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+class TestFetchAndExtractPdf:
+    @patch("subscriber.fetch.requests.get")
+    def test_pdf_response_uses_pdf_extractor(self, mock_get):
+        from subscriber.fetch import extract_pdf_text
+
+        pdf_bytes = _blank_pdf_bytes()
+        resp = MagicMock()
+        resp.headers = {"content-type": "application/pdf"}
+        resp.content = pdf_bytes
+        mock_get.return_value = resp
+        with patch("subscriber.fetch.extract_pdf_text", return_value="pdf text") as mock_pdf:
+            result = fetch_and_extract("https://arxiv.org/pdf/2607.05168")
+        mock_pdf.assert_called_once_with(pdf_bytes)
+        assert result == "pdf text"
+
+    @patch("subscriber.fetch.requests.get")
+    def test_html_response_uses_html_extractor(self, mock_get):
+        resp = MagicMock()
+        resp.headers = {"content-type": "text/html"}
+        resp.content = b"<html></html>"
+        resp.text = "<html><body>hi</body></html>"
+        mock_get.return_value = resp
+        with patch("subscriber.fetch.extract_text", return_value="hi") as mock_html:
+            result = fetch_and_extract("https://example.com/a")
+        mock_html.assert_called_once()
+        assert result == "hi"
+
+    def test_extract_pdf_text_reads_real_pdf(self):
+        from subscriber.fetch import extract_pdf_text
+
+        # A writer-only PDF (no text layer) should return None, not raise.
+        assert extract_pdf_text(_blank_pdf_bytes()) is None
 
 
 class TestFetchSource:

@@ -33,6 +33,36 @@ def http_get(url: str) -> str:
     return resp.text
 
 
+def _is_pdf(url: str, content_type: str, head: bytes) -> bool:
+    return (
+        "pdf" in content_type.lower()
+        or url.lower().endswith(".pdf")
+        or head.startswith(b"%PDF")
+    )
+
+
+def extract_pdf_text(data: bytes) -> str | None:
+    """Extract text from raw PDF bytes, page by page."""
+    import io
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
+    return text.strip() or None
+
+
+def fetch_and_extract(url: str) -> str | None:
+    """GET a URL and extract its article text, handling PDFs (e.g. arXiv links)
+    separately from HTML — feeding raw PDF bytes to the HTML extractor produces
+    garbage (undecodable binary passed straight through as "text")."""
+    resp = requests.get(url, impersonate="chrome", timeout=TIMEOUT)
+    resp.raise_for_status()
+    if _is_pdf(url, resp.headers.get("content-type", ""), resp.content[:8]):
+        return extract_pdf_text(resp.content)
+    return extract_text(resp.text, url=url)
+
+
 def browser_get_text(url: str, selector: str | None = None) -> str:
     """Render a JS-heavy page with Obscura and dump visible text."""
     binary = shutil.which("obscura") or str(Path.home() / ".local/bin/obscura")
@@ -64,7 +94,7 @@ def fetch_rss(source: dict, state: State, max_items: int) -> list[Update]:
             link = entry.get("link", "")
             content = None
             try:
-                content = extract_text(http_get(link), link)
+                content = fetch_and_extract(link)
             except Exception:
                 pass  # fall back to the feed's own summary
             if not content:
@@ -91,7 +121,7 @@ def fetch_page(source: dict, state: State) -> list[Update]:
     if source["type"] == "browser":
         text = browser_get_text(url, source.get("selector"))
     else:
-        text = extract_text(http_get(url), url)
+        text = fetch_and_extract(url)
     if not text or not text.strip():
         raise RuntimeError("正文提取为空")
 
@@ -148,7 +178,7 @@ def fetch_inbox(source: dict, state: State, max_items: int) -> list[Update]:
             if urls and len(content.split()) <= 10:
                 link = urls[0]
                 try:
-                    content = extract_text(http_get(link), link) or content
+                    content = fetch_and_extract(link) or content
                 except Exception:
                     pass
             updates.append(
