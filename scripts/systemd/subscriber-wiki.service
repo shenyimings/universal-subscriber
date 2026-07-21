@@ -7,7 +7,7 @@ Type=oneshot
 WorkingDirectory=%h/subscriber/agent
 # agent 内部要 spawn uv（reindex / fetch_url），systemd 默认 PATH 找不到
 Environment=PATH=%h/.local/bin:%h/.local/node22/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.local/node22/bin/node src/main.ts --limit 5
+ExecStart=%h/.local/node22/bin/node src/main.ts --limit 10
 ExecStart=%h/subscriber/scripts/push_wiki.sh
 StandardOutput=append:%h/subscriber/data/run.log
 StandardError=append:%h/subscriber/data/run.log
