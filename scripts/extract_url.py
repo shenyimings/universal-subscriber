@@ -11,14 +11,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from subscriber.fetch import extract_text, http_get
+from subscriber.fetch import fetch_and_extract
 
 
 def main() -> None:
     if len(sys.argv) != 2:
         sys.exit("用法: extract_url.py <url>")
     url = sys.argv[1]
-    text = extract_text(http_get(url), url)
+    text = fetch_and_extract(url)
     if not text:
         sys.exit(f"正文抽取失败: {url}")
     print(text)
