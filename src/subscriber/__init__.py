@@ -28,9 +28,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="subscriber", description=__doc__)
     parser.add_argument(
         "command",
-        choices=["run", "wiki"],
-        help="run: 抓取并生成日报;wiki: 把已归档的 sources 编译进知识库",
+        choices=["run", "wiki", "search"],
+        help="run: 抓取并生成日报;wiki: 把已归档的 sources 编译进知识库;"
+        "search: 在 wiki 里按 pages -> sources 分层检索",
     )
+    parser.add_argument("query", nargs="?", help="search: 检索词")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径")
     parser.add_argument("--source", help="只跑指定名称的源")
     parser.add_argument(
@@ -40,9 +42,21 @@ def main() -> None:
     parser.add_argument(
         "--fix", action="store_true", help="wiki: 与 --lint 连用，先做一轮坏链修复"
     )
-    parser.add_argument("--limit", type=int, help="wiki: 本次最多编译几篇")
+    parser.add_argument("--limit", type=int, help="wiki: 本次最多编译几篇;search: 每层返回几条")
     parser.add_argument(
         "--reindex", action="store_true", help="wiki: 只重建 index.md（供 agent 调用）"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["keyword", "semantic", "hybrid"],
+        default="keyword",
+        help="search: keyword=BM25 精确词;semantic=向量近似;hybrid=混合并重排（慢）",
+    )
+    parser.add_argument(
+        "--deep", action="store_true", help="search: 无论 pages 命中如何都下探 sources"
+    )
+    parser.add_argument(
+        "--setup", action="store_true", help="search: 注册/刷新 qmd collection 后退出"
     )
     args = parser.parse_args()
 
@@ -57,6 +71,21 @@ def main() -> None:
     max_items = limits.get("max_items_per_source", 5)
     max_chars = limits.get("max_chars_per_item", 6000)
     wiki_dir = root / cfg.get("wiki", {}).get("dir", "wiki")
+
+    if args.command == "search":
+        from .search import format_results, search_wiki, setup_collections
+
+        if args.setup:
+            setup_collections(wiki_dir)
+            print("qmd collection 已就绪。", file=sys.stderr)
+            return
+        if not args.query:
+            sys.exit("search 需要检索词，例如：subscriber search '智能体评估'")
+        result = search_wiki(
+            wiki_dir, args.query, args.mode, args.limit or 5, args.deep
+        )
+        print(format_results(result))
+        return
 
     if args.command == "wiki":
         from .wiki import compile_wiki, fix_wikilinks, lint_wiki, rebuild_index
