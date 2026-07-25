@@ -91,3 +91,20 @@ test("改动预算：临近上限提示，用完后拒绝", async () => {
 	);
 	fs.rmSync(ctx.wikiDir, { recursive: true });
 });
+
+test("list_index 读分类切片索引，缺失分类返回空提示", async () => {
+	const ctx = tmpCtx();
+	fs.mkdirSync(path.join(ctx.wikiDir, "index"), { recursive: true });
+	fs.writeFileSync(
+		path.join(ctx.wikiDir, "index", "ai-security.md"),
+		"# ai-security\n\n1 个页面。本分类标签：`fuzzing`\n\n- [[alpha]] `fuzzing` — 第一页\n",
+	);
+
+	const listing = await run(ctx, "list_index", { category: "ai-security" });
+	assert.match(listing, /\[\[alpha\]\]/);
+	assert.match(listing, /本分类标签/);
+
+	assert.equal(await run(ctx, "list_index", { category: "llm-systems" }), "(该分类暂无页面)");
+	await assert.rejects(run(ctx, "list_index", { category: "nope" }), /未知分类/);
+	fs.rmSync(ctx.wikiDir, { recursive: true });
+});

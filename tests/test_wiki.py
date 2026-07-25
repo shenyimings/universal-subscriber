@@ -236,6 +236,33 @@ class TestIndexAndLint:
         assert "- [[beta]] — 第二页" in index
         assert index.index("## ai-security") < index.index("## uncategorized")
 
+    def test_rebuild_index_writes_category_slices(self, tmp_path):
+        _write_page(tmp_path, "alpha", description="第一页",
+                    category="ai-security", tags=["fuzzing", "llm-agent"])
+        _write_page(tmp_path, "gamma", description="第三页",
+                    category="ai-security", tags=["fuzzing"])
+        _write_page(tmp_path, "beta", description="第二页")
+        rebuild_index(tmp_path)
+
+        slice_ = (tmp_path / "index" / "ai-security.md").read_text()
+        assert slice_.startswith("# ai-security\n")
+        assert "2 个页面。本分类标签：`fuzzing` `llm-agent`" in slice_
+        assert "- [[alpha]] `fuzzing` `llm-agent` — 第一页" in slice_
+        assert "[[beta]]" not in slice_
+        assert (tmp_path / "index" / "uncategorized.md").exists()
+        assert not (tmp_path / "index" / "llm-systems.md").exists()
+
+    def test_rebuild_index_prunes_emptied_category_slices(self, tmp_path):
+        _write_page(tmp_path, "alpha", category="ai-security")
+        rebuild_index(tmp_path)
+        assert (tmp_path / "index" / "ai-security.md").exists()
+
+        (tmp_path / "pages" / "alpha.md").unlink()
+        _write_page(tmp_path, "beta", category="llm-systems")
+        rebuild_index(tmp_path)
+        assert not (tmp_path / "index" / "ai-security.md").exists()
+        assert (tmp_path / "index" / "llm-systems.md").exists()
+
     def test_category_index_filters_by_category(self, tmp_path):
         from subscriber.wiki import category_index
         _write_page(tmp_path, "alpha", description="第一页", category="ai-security")

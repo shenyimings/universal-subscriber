@@ -85,10 +85,10 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			if (!CATEGORIES.includes(params.category)) {
 				throw new Error(`未知分类 ${params.category}，可选：${CATEGORIES.join(", ")}`);
 			}
-			const index = fs.readFileSync(path.join(ctx.wikiDir, "index.md"), "utf-8");
-			const m = index.split(new RegExp(`^## ${params.category}$`, "m"))[1];
-			const section = m ? m.split(/^## /m)[0].trim() : "";
-			return text(section || "(该分类暂无页面)");
+			// 分类切片索引由 subscriber wiki --reindex 维护，只读它，不再切整库 index.md
+			const p = path.join(ctx.wikiDir, "index", `${params.category}.md`);
+			if (!fs.existsSync(p)) return text("(该分类暂无页面)");
+			return text(fs.readFileSync(p, "utf-8").trim());
 		},
 	};
 

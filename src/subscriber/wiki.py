@@ -4,6 +4,7 @@ Layout under the wiki dir:
   sources/YYYY/MM/*.md  raw archived articles (written by archive.py, immutable)
   pages/*.md            curated knowledge pages, cross-linked with [[wikilinks]]
   index.md              page catalog, rebuilt deterministically from frontmatter
+  index/<category>.md   per-category slice of the same catalog, same rebuild
   log.md                append-only ingest log
 
 The LLM only does two things per source: plan which pages to touch (JSON),
@@ -85,6 +86,31 @@ def category_index(wiki_dir: Path, category: str) -> str:
     return "\n".join(lines) if lines else "(该分类暂无页面)"
 
 
+# 分类切片索引目录：内容与 index.md 的同名小节一致，供检索方只读一个分类，
+# 不必把整库索引塞进上下文。由 rebuild_index 一并重建，空分类的文件会被删除。
+INDEX_DIR = "index"
+
+
+def _rebuild_category_indexes(wiki_dir: Path, entries: list[tuple[str, dict]]) -> None:
+    out_dir = wiki_dir / INDEX_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = set()
+    for cat in CATEGORIES + ["uncategorized"]:
+        group = [(s, m) for s, m in entries if _category_of(m) == cat]
+        if not group:
+            continue
+        tags = sorted({str(t) for _, m in group for t in m.get("tags") or []})
+        lines = [f"# {cat}", ""]
+        lines.append(f"{len(group)} 个页面。本分类标签：" + " ".join(f"`{t}`" for t in tags))
+        lines.append("")
+        lines += [_index_line(s, m) for s, m in group]
+        (out_dir / f"{cat}.md").write_text("\n".join(lines) + "\n")
+        written.add(f"{cat}.md")
+    for stale in out_dir.glob("*.md"):
+        if stale.name not in written:
+            stale.unlink()
+
+
 def rebuild_index(wiki_dir: Path) -> None:
     entries = _page_entries(wiki_dir)
     lines = ["# Index", ""]
@@ -96,6 +122,7 @@ def rebuild_index(wiki_dir: Path) -> None:
         lines += [_index_line(s, m) for s, m in group]
         lines.append("")
     (wiki_dir / "index.md").write_text("\n".join(lines).rstrip("\n") + "\n")
+    _rebuild_category_indexes(wiki_dir, entries)
 
 
 def append_log(wiki_dir: Path, action: str, detail: str) -> None:
