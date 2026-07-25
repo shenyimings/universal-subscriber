@@ -97,16 +97,31 @@ def _resolve(base: Path, rel: str) -> Path | None:
     return None
 
 
+def _registered_path(name: str) -> Path | None:
+    """The directory qmd currently has under this collection name, if any."""
+    shown = _run(["collection", "show", name])
+    m = re.search(r"^\s*Path:\s*(.+)$", shown, re.MULTILINE)
+    return Path(m.group(1).strip()) if m else None
+
+
 def setup_collections(wiki_dir: Path) -> None:
     """Register the two collections and re-index. Idempotent, so the daily
-    units can call it to keep the index fresh."""
-    existing = _run(["collection", "list"])
+    units can call it to keep the index fresh.
+
+    Reconciles by path, not just by name: qmd stores absolute paths, and the
+    portable wiki-search script re-points these same collection names at
+    whatever clone it is running from. Checking the name alone would leave a
+    collection indexing someone else's copy of the wiki.
+    """
     for name, path in (
         (PAGES_COLLECTION, wiki_dir / "pages"),
         (SOURCES_COLLECTION, wiki_dir / "sources"),
     ):
-        if name in existing:
+        current = _registered_path(name)
+        if current == path:
             continue
+        if current is not None:
+            _run(["collection", "remove", name])
         _run(["collection", "add", str(path), "--name", name])
     _run(["update"])
 

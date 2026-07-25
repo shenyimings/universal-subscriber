@@ -192,19 +192,50 @@ class TestHelpers:
         assert _rel(f"qmd://{PAGES_COLLECTION}/a.md", PAGES_COLLECTION) == "a.md"
         assert _rel("a.md", PAGES_COLLECTION) == "a.md"
 
-    def test_setup_registers_missing_collections_only(self, tmp_path):
+    def _setup_calls(self, tmp_path, registered):
+        """registered: collection name -> path qmd currently reports."""
         calls = []
 
         def run(args):
             calls.append(args)
-            return f"{PAGES_COLLECTION} (qmd://{PAGES_COLLECTION}/)" if args[0] == "collection" and args[1] == "list" else ""
+            if args[:2] == ["collection", "show"]:
+                path = registered.get(args[2])
+                return (
+                    f"Collection: {args[2]}\n  Path:     {path}\n"
+                    if path
+                    else f"Collection not found: {args[2]}\n"
+                )
+            return ""
 
         with patch("subscriber.search._run", run):
             setup_collections(tmp_path)
+        return calls
 
+    def test_setup_registers_only_what_is_missing(self, tmp_path):
+        calls = self._setup_calls(tmp_path, {PAGES_COLLECTION: str(tmp_path / "pages")})
         added = [a for a in calls if a[:2] == ["collection", "add"]]
-        assert len(added) == 1
-        assert added[0][-1] == SOURCES_COLLECTION
+        assert len(added) == 1 and added[0][-1] == SOURCES_COLLECTION
+        assert not any(a[:2] == ["collection", "remove"] for a in calls)
+        assert ["update"] in calls
+
+    def test_setup_repoints_a_collection_aimed_elsewhere(self, tmp_path):
+        """wiki-search 会把同名集合指向它自己的克隆；每日 unit 必须能纠回来。"""
+        calls = self._setup_calls(tmp_path, {
+            PAGES_COLLECTION: "/some/other/clone/pages",
+            SOURCES_COLLECTION: str(tmp_path / "sources"),
+        })
+        assert ["collection", "remove", PAGES_COLLECTION] in calls
+        assert ["collection", "add", str(tmp_path / "pages"), "--name", PAGES_COLLECTION] in calls
+        assert not any(
+            a[:2] == ["collection", "remove"] and a[2] == SOURCES_COLLECTION for a in calls
+        )
+
+    def test_setup_leaves_correct_collections_alone(self, tmp_path):
+        calls = self._setup_calls(tmp_path, {
+            PAGES_COLLECTION: str(tmp_path / "pages"),
+            SOURCES_COLLECTION: str(tmp_path / "sources"),
+        })
+        assert not any(a[:2] in (["collection", "add"], ["collection", "remove"]) for a in calls)
         assert ["update"] in calls
 
     def test_format_results_lists_pages_then_sources(self, tmp_path):
