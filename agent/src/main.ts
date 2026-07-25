@@ -4,7 +4,7 @@
  * 标记 compiled、重建索引。内循环（pi Agent）：模型自主读索引/读页/增量编辑/
  * 抓链接，直到调用 finish。终止由代码侧验证器决定，不采信模型自评。
  *
- * 用法：node src/main.ts [--limit N] [--max-turns N] [--dry-run]
+ * 用法：node src/main.ts [--limit N] [--max-turns N] [--dry-run] [--file <相对 wiki 目录的 pending 源路径>]
  */
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
@@ -144,6 +144,7 @@ async function main(): Promise<void> {
 	const maxTurns = arg("--max-turns", 24);
 	const configPath = path.resolve(argStr("--config", path.join(ROOT, "config.yaml")));
 	const dryRun = process.argv.includes("--dry-run");
+	const onlyFile = argStr("--file", "");
 
 	const envPath = path.join(ROOT, ".env");
 	if (fs.existsSync(envPath)) process.loadEnvFile(envPath);
@@ -163,7 +164,14 @@ async function main(): Promise<void> {
 		.replaceAll("{max_page_chars}", String(MAX_PAGE_CHARS));
 
 	const pending = pendingSources(wikiDir);
-	const batch = pending.slice(0, limit);
+	let batch = pending.slice(0, limit);
+	if (onlyFile) {
+		const target = path.resolve(wikiDir, onlyFile);
+		if (!pending.includes(target)) {
+			throw new Error(`--file 未命中 pending 源：${onlyFile}（不存在，或已 compiled）`);
+		}
+		batch = [target];
+	}
 	console.error(`[wiki-agent] backlog ${pending.length} 篇，本次处理 ${batch.length} 篇`);
 	if (dryRun) {
 		for (const p of batch) console.error(`  ${path.relative(wikiDir, p)}`);
