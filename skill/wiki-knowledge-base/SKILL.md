@@ -94,23 +94,44 @@ words often matches no page name. Rather than inferring from `index.md`, search
 for it. [qmd](https://github.com/tobi/qmd) is a local markdown search engine
 (BM25 + vectors + optional local reranking) and fits this wiki well.
 
-Set it up once per machine (`<wiki>` = the wiki directory):
+**Use the `wiki-search` script that sits next to this file.** It is
+self-contained (python3 + qmd, no other dependencies), locates the wiki
+relative to itself, and registers/re-points the qmd collections on every run —
+which matters, because a fresh `git clone` lands at a new path and would
+otherwise leave qmd indexing a directory that no longer exists.
 
 ```bash
-npm install -g @tobilu/qmd
-qmd collection add <wiki>/pages   --name wiki-pages
-qmd collection add <wiki>/sources --name wiki-sources
+npm install -g @tobilu/qmd                  # once per machine
+<wiki>/skill/wiki-knowledge-base/wiki-search "沙箱 逃逸"
+<wiki>/skill/wiki-knowledge-base/wiki-search "怎么隔离代理" --semantic
+<wiki>/skill/wiki-knowledge-base/wiki-search "TOCTOU" --deep -n 10
 ```
 
-`qmd update` re-indexes after a `git pull` — cheap, run it whenever you pull.
-`qmd embed` downloads a ~300MB embedding model and is only needed for the
-semantic modes below; BM25 works without it.
+It prints the page layer first, then the archive layer when the pages come up
+short, and tells you which pages a source was compiled into. Read what it
+points at; do not stop at the search output.
 
-**Index the two layers as two collections, never as one.** `sources/` is
+Modes: keyword (default) is BM25 — instant, no model, and terms are ANDed, so
+keep the query to 1-3 distinctive words; long natural-language queries return
+nothing. `--semantic` matches paraphrases, an English question against Chinese
+pages, or a concept with several common names, and needs `qmd embed` once
+(~300MB model, and the embedding pass over a grown wiki can take an hour).
+`--hybrid` adds LLM reranking: best quality, slow on CPU, use it when the
+other two miss.
+
+### What the script does, if you have to do it by hand
+
+Index the two layers as two collections, **never as one**. `sources/` is
 several times the volume of `pages/` and restates the same material nearly
 verbatim, so one merged ranking buries the curated pages under raw archive
 text. Keeping them apart lets you search the page layer first and escalate
 deliberately:
+
+```bash
+qmd collection add <wiki>/pages   --name wiki-pages
+qmd collection add <wiki>/sources --name wiki-sources
+qmd update    # after every git pull
+```
 
 1. **Search pages.** `qmd search "<terms>" -c wiki-pages -n 5 --format md`
 2. **Escalate to sources only when pages come back empty or weak** (top score
@@ -123,24 +144,8 @@ deliberately:
 4. **Re-enter the hierarchy at any hit.** Open the page, then read
    `index/<its category>.md` to find its siblings.
 
-Which mode to use:
-
-- `qmd search` — BM25, no model, instant. Terms are ANDed, so keep the query
-  to 1-3 distinctive words; long natural-language queries return nothing.
-  This is the default choice.
-- `qmd vsearch` — vector similarity. Use when the question's wording will not
-  appear literally: paraphrases, an English question against Chinese pages,
-  or a concept with several common names. Requires `qmd embed`.
-- `qmd query` — hybrid retrieval with LLM reranking. Highest quality, but runs
-  local models and is slow on CPU. Reach for it only when the other two miss.
-
-Useful flags: `-n <num>` results, `--format md|json|files`, `--full` for the
-whole document, `--min-score <num>` to cut noise.
-
-If the wiki's own pipeline repo (universal-subscriber) is at hand, that whole
-escalation is one command: `uv run subscriber search "<terms>"`, with
-`--mode semantic|hybrid`, `--deep` to always include sources, and
-`--setup` to register the two collections.
+Other qmd flags worth knowing: `--format md|json|files`, `--full` for the whole
+document, `--min-score <num>` to cut noise.
 
 Without qmd installed, fall back to grep: `grep -ril <keyword> pages/`, then
 `sources/` — uncompiled or unadopted originals live there. If neither layer

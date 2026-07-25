@@ -67,6 +67,8 @@ The index only carries a one-line description per page, so a question phrased in
 
 `--mode keyword` (BM25, the default) is instant and ANDs its terms, so keep queries to a few distinctive words; `--mode semantic` matches paraphrases via local embeddings (`qmd embed` once); `--mode hybrid` adds LLM reranking and is slow. The two daily units refresh the index after they touch content, so the search never lags behind the wiki.
 
+The wiki also carries the search with it. `skill/wiki-knowledge-base/wiki-search` is a standalone python3 + qmd executable that ships inside the wiki directory, so an LLM handed nothing but the knowledge repo still gets the same escalation as one command — it locates the wiki relative to itself and re-points the qmd collections on every run, which matters because each fresh clone lands at a new absolute path.
+
 The homepage of the published site has its own search box — a client-side filter over titles, tags, descriptions and page ledes, built as `index.json` at deploy time. No service, no request leaves the page.
 
 ## Using the wiki elsewhere
