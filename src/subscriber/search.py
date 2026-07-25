@@ -138,10 +138,29 @@ def search_wiki(
     limit: int = 5,
     deep: bool = False,
 ) -> dict:
-    """Layered search. Returns {"pages": [...], "sources": [...], "deep": bool}."""
+    """Layered search, with a keyword -> semantic rescue.
+
+    BM25 is literal: it only finds wording that actually occurs in the wiki, so
+    a question asked in the caller's own words returns nothing at all (measured:
+    `成本治理` hits, `控制花销` does not). Zero keyword hits is therefore
+    evidence that only vector search can help, and making the caller discover
+    that themselves just wastes a round trip.
+    """
     if mode not in MODES:
         raise ValueError(f"未知检索模式 {mode}，可选：{', '.join(MODES)}")
 
+    result = _search_once(wiki_dir, query, mode, limit, deep)
+    if mode != "keyword" or result["pages"]:
+        return result
+    rescue = _search_once(wiki_dir, query, "semantic", limit, deep)
+    if rescue["pages"]:
+        return {**rescue, "mode": "semantic", "fell_back": True}
+    return {**result, "fell_back": True}
+
+
+def _search_once(
+    wiki_dir: Path, query: str, mode: str, limit: int, deep: bool
+) -> dict:
     pages = []
     for hit in _query(PAGES_COLLECTION, query, mode, limit):
         name = _rel(hit.get("file", ""), PAGES_COLLECTION)
@@ -174,11 +193,21 @@ def search_wiki(
                 "snippet": hit.get("snippet", ""),
             })
 
-    return {"pages": pages, "sources": sources, "deep": escalate}
+    return {
+        "pages": pages, "sources": sources, "deep": escalate,
+        "mode": mode, "fell_back": False,
+    }
 
 
 def format_results(result: dict) -> str:
     lines = []
+    if result.get("fell_back"):
+        lines.append(
+            f"（keyword 字面检索 0 命中，已自动改用 {result.get('mode')} 检索）"
+            if result.get("mode") == "semantic"
+            else "（keyword 与 semantic 均无命中；若从未跑过 qmd embed，语义检索是空的）"
+        )
+        lines.append("")
     if result["pages"]:
         lines.append("## pages（沉淀页面，优先读这些）")
         for p in result["pages"]:

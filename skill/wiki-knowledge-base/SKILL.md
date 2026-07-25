@@ -111,13 +111,18 @@ It prints the page layer first, then the archive layer when the pages come up
 short, and tells you which pages a source was compiled into. Read what it
 points at; do not stop at the search output.
 
-Modes: keyword (default) is BM25 — instant, no model, and terms are ANDed, so
-keep the query to 1-3 distinctive words; long natural-language queries return
-nothing. `--semantic` matches paraphrases, an English question against Chinese
-pages, or a concept with several common names, and needs `qmd embed` once
-(~300MB model, and the embedding pass over a grown wiki can take an hour).
-`--hybrid` adds LLM reranking: best quality, slow on CPU, use it when the
-other two miss.
+**You can just ask it your question.** The default keyword mode is BM25, which
+is purely literal — it finds only wording that actually occurs in the wiki
+(`成本治理` hits; the synonymous `控制花销` does not), so a question phrased in
+your own words matches nothing. The script detects that zero-hit case and
+retries semantically on its own, telling you on stderr that it did. Keyword
+alone answers in about a second; the semantic retry costs a few seconds more.
+
+Reach for the flags when you already know better: `--semantic` up front if you
+are certain the wiki will not use your words, `--hybrid` for LLM reranking
+(best quality, slow on CPU) when both of the others miss. Semantic modes need
+`qmd embed` to have been run once (~300MB model; the pass over a grown wiki
+takes a while, and it is fine to run it repeatedly — it resumes).
 
 ### What the script does, if you have to do it by hand
 
@@ -133,7 +138,10 @@ qmd collection add <wiki>/sources --name wiki-sources
 qmd update    # after every git pull
 ```
 
-1. **Search pages.** `qmd search "<terms>" -c wiki-pages -n 5 --format md`
+1. **Search pages.** `qmd search "<terms>" -c wiki-pages -n 5 --format md`.
+   BM25 is literal and ANDs its terms, so this only works with wording the
+   wiki itself uses — 1-3 distinctive nouns, not a question. On zero hits,
+   redo it with `qmd vsearch` before concluding anything.
 2. **Escalate to sources only when pages come back empty or weak** (top score
    below ~0.5, i.e. the words matched but the topic didn't): rerun with
    `-c wiki-sources`.

@@ -135,7 +135,19 @@ def main() -> None:
     ensure_collections()
     pages_col, sources_col = f"{PREFIX}-pages", f"{PREFIX}-sources"
 
-    hits = query(pages_col, args.query, args.mode, args.limit)
+    mode = args.mode
+    hits = query(pages_col, args.query, mode, args.limit)
+    # BM25 只认 wiki 里字面出现过的说法，用自己的话提问必然 0 命中（实测
+    # 「成本治理」命中、「控制花销」不命中）。0 命中就是「只有向量检索能救」的
+    # 证据，没必要让调用方多跑一轮才发现。
+    if mode == "keyword" and not hits:
+        print("keyword 字面检索 0 命中，改用语义检索（较慢，需要 qmd embed 过）…",
+              file=sys.stderr)
+        mode = "semantic"
+        hits = query(pages_col, args.query, mode, args.limit)
+        if not hits:
+            print("（keyword 与 semantic 均无命中；若从未跑过 qmd embed，语义索引是空的）")
+
     if hits:
         print("## pages（沉淀页面，优先读这些）")
         for hit in hits:
@@ -154,7 +166,7 @@ def main() -> None:
 
     known = {rel(h.get("file", ""), pages_col) for h in hits}
     print()
-    src_hits = query(sources_col, args.query, args.mode, args.limit)
+    src_hits = query(sources_col, args.query, mode, args.limit)
     if not src_hits:
         print("## sources 无命中")
         return

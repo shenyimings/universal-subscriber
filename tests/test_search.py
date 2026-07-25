@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from subscriber.search import (
+    MODES,
     PAGES_COLLECTION,
     SOURCES_COLLECTION,
     _rel,
@@ -45,14 +46,20 @@ def _hit(collection, rel, score, snippet="片段"):
     return {"file": f"qmd://{collection}/{rel}", "score": score, "snippet": snippet}
 
 
-def _fake_qmd(pages_hits=(), sources_hits=()):
-    """Stub for search._run: dispatch on the -c collection in the argv."""
+def _fake_qmd(pages_hits=(), sources_hits=(), vector_pages_hits=None):
+    """Stub for search._run: dispatch on the -c collection and the subcommand.
+
+    vector_pages_hits, when given, is what `vsearch` returns for the pages
+    collection — that is how the keyword -> semantic rescue is exercised.
+    """
     calls = []
 
     def run(args):
         calls.append(args)
         collection = args[args.index("-c") + 1] if "-c" in args else ""
         if collection == PAGES_COLLECTION:
+            if args[0] == "vsearch" and vector_pages_hits is not None:
+                return json.dumps(list(vector_pages_hits))
             return json.dumps(list(pages_hits))
         if collection == SOURCES_COLLECTION:
             return json.dumps(list(sources_hits))
@@ -149,6 +156,67 @@ class TestLayering:
         with patch("subscriber.search._run", lambda args: "not json"):
             result = search_wiki(tmp_path, "关键词")
         assert result["pages"] == [] and result["sources"] == []
+
+
+def _pages_subcommands(fake):
+    """Which qmd subcommands were run against the pages collection, in order."""
+    return [
+        a[0] for a in fake.calls
+        if a[0] in MODES.values() and PAGES_COLLECTION in a
+    ]
+
+
+class TestKeywordRescue:
+    """BM25 只找字面出现过的说法，所以用自己的话提问会 0 命中；代码要兜住。"""
+
+    def test_zero_keyword_hits_retries_semantically(self, tmp_path):
+        _write_page(tmp_path, "alpha", description="第一页")
+        fake = _fake_qmd(
+            pages_hits=[],
+            vector_pages_hits=[_hit(PAGES_COLLECTION, "alpha.md", 0.6)],
+        )
+        with patch("subscriber.search._run", fake):
+            result = search_wiki(tmp_path, "用我自己的话问")
+
+        # pages 层先 BM25、再向量重试；sources 层各自跟着走
+        assert _pages_subcommands(fake) == ["search", "vsearch"]
+        assert result["fell_back"] is True
+        assert result["mode"] == "semantic"
+        assert result["pages"][0]["page"] == "alpha.md"
+
+    def test_keyword_hits_are_not_second_guessed(self, tmp_path):
+        _write_page(tmp_path, "alpha")
+        fake = _fake_qmd(pages_hits=[_hit(PAGES_COLLECTION, "alpha.md", 0.9)])
+        with patch("subscriber.search._run", fake):
+            result = search_wiki(tmp_path, "成本治理")
+        assert result["fell_back"] is False
+        assert result["mode"] == "keyword"
+        assert not any(a[0] == "vsearch" for a in fake.calls)
+
+    def test_explicit_semantic_never_falls_back(self, tmp_path):
+        fake = _fake_qmd(pages_hits=[])
+        with patch("subscriber.search._run", fake):
+            result = search_wiki(tmp_path, "关键词", mode="semantic")
+        assert result["fell_back"] is False
+        assert _pages_subcommands(fake) == ["vsearch"]
+
+    def test_both_modes_empty_keeps_the_keyword_result(self, tmp_path):
+        fake = _fake_qmd(pages_hits=[], vector_pages_hits=[])
+        with patch("subscriber.search._run", fake):
+            result = search_wiki(tmp_path, "关键词")
+        assert result["fell_back"] is True
+        assert result["mode"] == "keyword"
+        assert result["pages"] == []
+
+    def test_format_explains_the_switch(self):
+        text = format_results({"pages": [], "sources": [], "deep": False,
+                               "mode": "semantic", "fell_back": True})
+        assert "已自动改用 semantic" in text
+
+    def test_format_explains_a_total_miss(self):
+        text = format_results({"pages": [], "sources": [], "deep": False,
+                               "mode": "keyword", "fell_back": True})
+        assert "qmd embed" in text
 
 
 class TestResolve:

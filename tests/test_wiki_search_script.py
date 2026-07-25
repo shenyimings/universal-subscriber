@@ -49,13 +49,16 @@ def _source(wiki, rel, compiled=True, pages=("alpha.md",), indent="", title="源
     path.write_text("\n".join(front) + "\n\n## 原文\n正文\n")
 
 
-def _stub_qmd(tmp_path, pages_hits=(), sources_hits=(), collections=None):
+def _stub_qmd(tmp_path, pages_hits=(), sources_hits=(), collections=None,
+              vector_pages_hits=None):
     """A fake qmd. Records every invocation to calls.log and answers searches
-    from canned JSON keyed by the -c collection."""
+    from canned JSON keyed by the -c collection. vector_pages_hits, when given,
+    is what `vsearch` returns for pages — that drives the keyword rescue."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     payload = {
         "pages": list(pages_hits),
+        "vector_pages": None if vector_pages_hits is None else list(vector_pages_hits),
         "sources": list(sources_hits),
         # name -> registered path, i.e. what `collection show` reports
         "collections": collections or {},
@@ -76,7 +79,12 @@ if argv[:2] == ["collection", "show"]:
     sys.exit(0)
 if argv[0] in ("search", "vsearch", "query"):
     col = argv[argv.index("-c") + 1]
-    print(json.dumps(cfg["sources" if col.endswith("-sources") else "pages"]))
+    if col.endswith("-sources"):
+        print(json.dumps(cfg["sources"]))
+    elif argv[0] == "vsearch" and cfg["vector_pages"] is not None:
+        print(json.dumps(cfg["vector_pages"]))
+    else:
+        print(json.dumps(cfg["pages"]))
 sys.exit(0)
 ''')
     qmd.chmod(qmd.stat().st_mode | stat.S_IXUSR)
@@ -170,6 +178,50 @@ class TestLayering:
         _run(wiki, bin_dir, flag, "-n", "3", "关键词")
         searches = [c for c in _calls(tmp_path) if c.startswith(sub)]
         assert searches and "-n 3" in searches[0]
+
+
+class TestKeywordRescue:
+    """BM25 只找字面出现过的说法；用自己的话提问会 0 命中，脚本要自己兜住。"""
+
+    def _wiki(self, tmp_path, **stub):
+        wiki = _make_wiki(tmp_path)
+        _page(wiki, "alpha", description="第一页")
+        bin_dir = _stub_qmd(
+            tmp_path,
+            collections={"wiki-pages": str(wiki / "pages"),
+                         "wiki-sources": str(wiki / "sources")},
+            **stub,
+        )
+        return wiki, bin_dir
+
+    def test_zero_keyword_hits_retries_semantically(self, tmp_path):
+        wiki, bin_dir = self._wiki(
+            tmp_path, pages_hits=[], vector_pages_hits=[_hit("wiki-pages", "alpha.md", 0.6)])
+        proc = _run(wiki, bin_dir, "用我自己的话问")
+        assert "改用语义检索" in proc.stderr
+        assert "pages/alpha.md  0.60" in proc.stdout
+        pages_calls = [c.split()[0] for c in _calls(tmp_path) if "wiki-pages" in c
+                       and c.split()[0] in ("search", "vsearch", "query")]
+        assert pages_calls == ["search", "vsearch"]
+
+    def test_keyword_hits_are_not_second_guessed(self, tmp_path):
+        wiki, bin_dir = self._wiki(
+            tmp_path, pages_hits=[_hit("wiki-pages", "alpha.md", 0.9)])
+        proc = _run(wiki, bin_dir, "成本治理")
+        assert "改用语义检索" not in proc.stderr
+        assert not any(c.startswith("vsearch") for c in _calls(tmp_path))
+
+    def test_explicit_semantic_never_falls_back(self, tmp_path):
+        wiki, bin_dir = self._wiki(tmp_path, pages_hits=[], vector_pages_hits=[])
+        proc = _run(wiki, bin_dir, "--semantic", "关键词")
+        assert "改用语义检索" not in proc.stderr
+        assert not any(c.startswith("search ") for c in _calls(tmp_path))
+
+    def test_total_miss_says_so(self, tmp_path):
+        wiki, bin_dir = self._wiki(tmp_path, pages_hits=[], vector_pages_hits=[])
+        proc = _run(wiki, bin_dir, "关键词")
+        assert "qmd embed" in proc.stdout
+        assert "## pages 无命中" in proc.stdout
 
 
 class TestPathHandling:
