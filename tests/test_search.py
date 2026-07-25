@@ -9,6 +9,7 @@ from subscriber.search import (
     PAGES_COLLECTION,
     SOURCES_COLLECTION,
     _rel,
+    _resolve,
     format_results,
     search_wiki,
     setup_collections,
@@ -148,6 +149,42 @@ class TestLayering:
         with patch("subscriber.search._run", lambda args: "not json"):
             result = search_wiki(tmp_path, "关键词")
         assert result["pages"] == [] and result["sources"] == []
+
+
+class TestResolve:
+    """qmd 报的是 slug 化路径（`a--b.md` -> `a-b.md`），不是磁盘上的相对路径。"""
+
+    def test_direct_hit(self, tmp_path):
+        _write_page(tmp_path, "alpha")
+        assert _resolve(tmp_path / "pages", "alpha.md").name == "alpha.md"
+
+    def test_collapsed_hyphens_resolve_back(self, tmp_path):
+        _write_source(tmp_path, "2026/07/a--b--c0ffee42.md")
+        found = _resolve(tmp_path / "sources", "2026/07/a-b-c0ffee42.md")
+        assert found is not None
+        assert found.name == "a--b--c0ffee42.md"
+
+    def test_cjk_and_case_survive_squashing(self, tmp_path):
+        _write_source(tmp_path, "2026/07/My-Inbox--无标题--48a57f50.md")
+        found = _resolve(tmp_path / "sources", "2026/07/my-inbox-无标题-48a57f50.md")
+        assert found is not None and "无标题" in found.name
+
+    def test_unresolvable_returns_none(self, tmp_path):
+        (tmp_path / "sources").mkdir()
+        assert _resolve(tmp_path / "sources", "2026/07/gone.md") is None
+
+    def test_source_frontmatter_survives_a_slugged_path(self, tmp_path):
+        """回溯 pages: 依赖反解成功；这是 slug 化最初咬到的地方。"""
+        _write_source(tmp_path, "2026/07/anthropic--advanced-tool-use--eafa6e2f.md",
+                      pages=["beta.md"])
+        fake = _fake_qmd(
+            sources_hits=[_hit(SOURCES_COLLECTION,
+                               "2026/07/anthropic-advanced-tool-use-eafa6e2f.md", 0.8)],
+        )
+        with patch("subscriber.search._run", fake):
+            result = search_wiki(tmp_path, "关键词")
+        assert result["sources"][0]["compiled"] is True
+        assert result["sources"][0]["pages"] == ["beta.md"]
 
 
 class TestHelpers:

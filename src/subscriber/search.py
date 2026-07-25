@@ -18,6 +18,7 @@ adapter that owns the layering, not a wrapper around every qmd flag.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -74,6 +75,28 @@ def _rel(file: str, collection: str) -> str:
     return file[len(prefix):] if file.startswith(prefix) else file
 
 
+# qmd 的 qmd:// 路径是 slug 化的（`a--b.md` 会变成 `a-b.md`），不是磁盘上的
+# 相对路径，所以命中回文件要反解。不去猜 qmd 的 slug 规则，而是两边都压成
+# 「只留字母数字和汉字」再比对；归档文件名都带 8 位 hash 后缀，撞不上。
+_SQUASH_RE = re.compile(r"[^0-9a-z一-鿿/]+")
+
+
+def _squash(rel: str) -> str:
+    return _SQUASH_RE.sub("", rel.lower())
+
+
+def _resolve(base: Path, rel: str) -> Path | None:
+    """Map a qmd-reported relative path back onto the file on disk."""
+    direct = base / rel
+    if direct.exists():
+        return direct
+    want = _squash(rel)
+    for path in base.rglob("*.md"):
+        if _squash(path.relative_to(base).as_posix()) == want:
+            return path
+    return None
+
+
 def setup_collections(wiki_dir: Path) -> None:
     """Register the two collections and re-index. Idempotent, so the daily
     units can call it to keep the index fresh."""
@@ -88,20 +111,9 @@ def setup_collections(wiki_dir: Path) -> None:
     _run(["update"])
 
 
-def _page_meta(wiki_dir: Path, stem: str) -> dict:
-    path = wiki_dir / "pages" / f"{stem}.md"
-    if not path.exists():
-        return {}
-    return parse_front(path.read_text())[0]
-
-
-def _source_pages(wiki_dir: Path, rel: str) -> tuple[list[str], dict]:
-    path = wiki_dir / "sources" / rel
-    if not path.exists():
-        return [], {}
-    meta = parse_front(path.read_text())[0]
-    pages = [str(p) for p in (meta.get("pages") or [])]
-    return pages, meta
+def _front_of(base: Path, rel: str) -> dict:
+    path = _resolve(base, rel)
+    return parse_front(path.read_text())[0] if path else {}
 
 
 def search_wiki(
@@ -117,10 +129,10 @@ def search_wiki(
 
     pages = []
     for hit in _query(PAGES_COLLECTION, query, mode, limit):
-        stem = _rel(hit.get("file", ""), PAGES_COLLECTION).removesuffix(".md")
-        meta = _page_meta(wiki_dir, stem)
+        name = _rel(hit.get("file", ""), PAGES_COLLECTION)
+        meta = _front_of(wiki_dir / "pages", name)
         pages.append({
-            "page": f"{stem}.md",
+            "page": name,
             "score": hit.get("score", 0.0),
             "category": meta.get("category", ""),
             "description": meta.get("description", ""),
@@ -134,7 +146,8 @@ def search_wiki(
         known = {p["page"] for p in pages}
         for hit in _query(SOURCES_COLLECTION, query, mode, limit):
             rel = _rel(hit.get("file", ""), SOURCES_COLLECTION)
-            compiled_into, meta = _source_pages(wiki_dir, rel)
+            meta = _front_of(wiki_dir / "sources", rel)
+            compiled_into = [str(p) for p in (meta.get("pages") or [])]
             sources.append({
                 "source": rel,
                 "score": hit.get("score", 0.0),
