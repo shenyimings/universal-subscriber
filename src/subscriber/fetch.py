@@ -15,6 +15,10 @@ from curl_cffi import requests
 from .state import State
 
 TIMEOUT = 30
+# Feeds link to arbitrary URLs, including 4K videos. Reading one of those into
+# memory (and decoding it as text) is what OOM-killed the 08:00 run on 2026-08-01.
+MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
+_BINARY_TYPES = ("video/", "audio/", "image/", "font/")
 
 
 @dataclass
@@ -55,12 +59,28 @@ def extract_pdf_text(data: bytes) -> str | None:
 def fetch_and_extract(url: str) -> str | None:
     """GET a URL and extract its article text, handling PDFs (e.g. arXiv links)
     separately from HTML — feeding raw PDF bytes to the HTML extractor produces
-    garbage (undecodable binary passed straight through as "text")."""
-    resp = requests.get(url, impersonate="chrome", timeout=TIMEOUT)
-    resp.raise_for_status()
-    if _is_pdf(url, resp.headers.get("content-type", ""), resp.content[:8]):
-        return extract_pdf_text(resp.content)
-    return extract_text(resp.text, url=url)
+    garbage (undecodable binary passed straight through as "text").
+
+    Downloads are streamed and capped: media types are refused outright and
+    anything over MAX_DOWNLOAD_BYTES is abandoned, so one oversized link can't
+    take the whole run down with it."""
+    resp = requests.get(url, impersonate="chrome", timeout=TIMEOUT, stream=True)
+    try:
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "")
+        if content_type.lower().startswith(_BINARY_TYPES):
+            return None
+        data = b""
+        for chunk in resp.iter_content(chunk_size=64 * 1024):
+            data += chunk
+            if len(data) > MAX_DOWNLOAD_BYTES:
+                return None
+        encoding = resp.encoding or "utf-8"
+    finally:
+        resp.close()
+    if _is_pdf(url, content_type, data[:8]):
+        return extract_pdf_text(data)
+    return extract_text(data.decode(encoding, "replace"), url=url)
 
 
 def browser_get_text(url: str, selector: str | None = None) -> str:
