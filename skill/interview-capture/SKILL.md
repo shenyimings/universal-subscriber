@@ -104,7 +104,21 @@ GPU on a CPU box; OCR completes normally. Ignore it.
 - **小红书 anti-bot is a non-issue on this path.** `curl_cffi` with
   `impersonate="chrome"` returns 200 with no cookie and no captcha; five rapid
   repeats all succeeded. Images on `sns-webpic-qc.xhscdn.com` download with no
-  Referer check and no signature.
+  Referer check and no signature. Re-verified 2026-08-07: three older share
+  links still capture fine from the same box on the same day a fourth one
+  fails, so a failure is never "小红书 banned us" — check the note first.
+- **An empty note is not always a token problem (2026-08-07).** Two distinct
+  failures produce an empty `noteDetailMap`, and `capture.py` now separates
+  them by reading `serverRequestInfo`:
+  - no server error → the link really did lose its `xsec_token`.
+  - `errorCode: -510001` / `当前内容无法展示` → **the post is gone**（deleted,
+    under review, or author-only）. The shortlink redirect gives it away even
+    earlier: it lands on `/explore` with no note id in the path and carries
+    `target_note_id=<id>&undertake_note_error=该内容暂时无法查看`. Rebuilding a
+    `/discovery/item/<id>?xsec_token=…` URL from those params does not help,
+    and obscura renders only the footer. Nothing to debug — ask the user to
+    re-share, paste the text, or send screenshots (you can read those
+    directly).
 - **OCR does not need a vision model.** These are screenshots of note apps —
   rendered text, not photographs — and RapidOCR (CPU, offline, free) gets them
   near-perfectly: 14/14 questions on the test image in 5.9s, losing only a

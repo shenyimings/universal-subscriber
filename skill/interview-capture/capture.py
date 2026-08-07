@@ -84,10 +84,21 @@ def parse_xhs(html: str) -> dict:
     detail = (state.get("note") or {}).get("noteDetailMap") or {}
     notes = [v.get("note") for v in detail.values() if isinstance(v, dict) and v.get("note")]
     if not notes:
+        # two different failures land here; the error code tells them apart.
+        # search the whole page: a shortlink to a dead note redirects to
+        # /explore, where the code shows up outside serverRequestInfo.
+        if "-510001" in html or "无法展示" in html:
+            raise RuntimeError(
+                "note is empty and the server says 当前内容无法展示 (-510001) — "
+                "the post itself is unavailable (deleted / under review / "
+                "author-only). The link is fine; a headless browser fails the "
+                "same way. Ask for the text or a screenshot instead."
+            )
         raise RuntimeError(
-            "noteDetailMap is empty — the URL almost certainly lost its "
-            "xsec_token. Share links must be passed through verbatim; the "
-            "bare /explore/<id> form returns a 200 with no note in it."
+            "noteDetailMap is empty and the server reported no error — the URL "
+            "almost certainly lost its xsec_token. Share links must be passed "
+            "through verbatim; the bare /explore/<id> form returns a 200 with "
+            "no note in it."
         )
     note = notes[0]
     return {
