@@ -213,16 +213,21 @@ def _blank_pdf_bytes() -> bytes:
     return buf.getvalue()
 
 
+def _stream_response(content_type: str, body: bytes) -> MagicMock:
+    resp = MagicMock()
+    resp.headers = {"content-type": content_type}
+    resp.encoding = "utf-8"
+    resp.iter_content.return_value = iter([body])
+    return resp
+
+
 class TestFetchAndExtractPdf:
     @patch("subscriber.fetch.requests.get")
     def test_pdf_response_uses_pdf_extractor(self, mock_get):
         from subscriber.fetch import extract_pdf_text
 
         pdf_bytes = _blank_pdf_bytes()
-        resp = MagicMock()
-        resp.headers = {"content-type": "application/pdf"}
-        resp.content = pdf_bytes
-        mock_get.return_value = resp
+        mock_get.return_value = _stream_response("application/pdf", pdf_bytes)
         with patch("subscriber.fetch.extract_pdf_text", return_value="pdf text") as mock_pdf:
             result = fetch_and_extract("https://arxiv.org/pdf/2607.05168")
         mock_pdf.assert_called_once_with(pdf_bytes)
@@ -230,15 +235,32 @@ class TestFetchAndExtractPdf:
 
     @patch("subscriber.fetch.requests.get")
     def test_html_response_uses_html_extractor(self, mock_get):
-        resp = MagicMock()
-        resp.headers = {"content-type": "text/html"}
-        resp.content = b"<html></html>"
-        resp.text = "<html><body>hi</body></html>"
-        mock_get.return_value = resp
+        mock_get.return_value = _stream_response(
+            "text/html", b"<html><body>hi</body></html>"
+        )
         with patch("subscriber.fetch.extract_text", return_value="hi") as mock_html:
             result = fetch_and_extract("https://example.com/a")
         mock_html.assert_called_once()
         assert result == "hi"
+
+    @patch("subscriber.fetch.requests.get")
+    def test_video_response_skipped_without_reading_body(self, mock_get):
+        resp = _stream_response("video/mp4", b"\x00" * 1024)
+        mock_get.return_value = resp
+        assert fetch_and_extract("https://video.twimg.com/x.mp4") is None
+        resp.iter_content.assert_not_called()
+
+    @patch("subscriber.fetch.requests.get")
+    def test_oversized_response_abandoned(self, mock_get):
+        from subscriber.fetch import MAX_DOWNLOAD_BYTES
+
+        chunk = b"x" * (1024 * 1024)
+        resp = MagicMock()
+        resp.headers = {"content-type": "text/html"}
+        resp.encoding = "utf-8"
+        resp.iter_content.return_value = iter([chunk] * (MAX_DOWNLOAD_BYTES // len(chunk) + 2))
+        mock_get.return_value = resp
+        assert fetch_and_extract("https://example.com/huge") is None
 
     def test_extract_pdf_text_reads_real_pdf(self):
         from subscriber.fetch import extract_pdf_text
