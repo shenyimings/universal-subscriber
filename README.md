@@ -1,6 +1,6 @@
 # universal-subscriber
 
-![coverage](https://img.shields.io/badge/coverage-78%25-yellow)
+![coverage](https://img.shields.io/badge/coverage-81%25-brightgreen)
 
 Watch the information sources you care about, let an LLM read them for you, and keep what matters — twice:
 
