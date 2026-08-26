@@ -264,6 +264,45 @@ def _pick_link(text: str) -> str:
     return ""
 
 
+# 小红书 keeps the substance inside screenshots, and trafilatura sees only the
+# caption. skill/interview-capture/capture.py already parses __INITIAL_STATE__
+# and OCRs imageList, so route those links through it instead.
+_CAPTURE_HOSTS = ("xiaohongshu.com", "xhslink.com")
+CAPTURE_SCRIPT = Path(__file__).resolve().parents[2] / "skill/interview-capture/capture.py"
+CAPTURE_TIMEOUT = 300  # OCR runs ~6s per image on CPU
+
+
+def is_capture_url(url: str) -> bool:
+    return any(host in url for host in _CAPTURE_HOSTS)
+
+
+def capture_note(url: str) -> str:
+    """Markdown for one 小红书 note: caption, OCR of each screenshot, images."""
+    import json
+
+    proc = subprocess.run(
+        [str(CAPTURE_SCRIPT), url, "--ocr", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=CAPTURE_TIMEOUT,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"capture.py 失败: {proc.stderr.strip()[:300]}")
+    note = json.loads(proc.stdout)
+
+    parts = []
+    if note.get("title"):
+        parts.append(f"# {note['title']}")
+    if note.get("text"):
+        parts.append(note["text"])
+    for i, block in enumerate(note.get("ocr") or []):
+        parts.append(f"## 图 {i + 1} (OCR)\n\n{block}")
+    images = [(u, "") for u in note.get("images") or []]
+    if images:
+        parts.append(image_section(images))
+    return "\n\n".join(parts)
+
+
 def _agentmail_client(api_key: str):
     from agentmail import AgentMail
     return AgentMail(api_key=api_key)
@@ -279,7 +318,13 @@ def message_body(client, inbox_id: str, msg) -> str:
 
 
 def _follow(link: str) -> str | None:
-    """Fetch a link-only mail's article."""
+    """Fetch a link-only mail's article, preferring a dedicated parser."""
+    if is_capture_url(link):
+        try:
+            return capture_note(link)
+        except Exception as exc:
+            # a deleted note or a stripped xsec_token must not lose the mail
+            print(f"[fetch] capture.py 失败,退回通用抽取: {exc}", file=sys.stderr)
     return fetch_and_extract(link, with_images=True)
 
 

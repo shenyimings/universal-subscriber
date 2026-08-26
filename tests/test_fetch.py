@@ -1,5 +1,6 @@
 """Tests for fetch logic — HTTP calls are mocked."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,7 +9,9 @@ from subscriber.fetch import (
     MAX_IMAGES,
     Update,
     _pick_link,
+    capture_note,
     extract_images,
+    is_capture_url,
     fetch_and_extract,
     fetch_rss,
     fetch_page,
@@ -337,6 +340,105 @@ class TestFetchInbox:
         # all 5 should be marked seen
         for i in range(5):
             assert state.is_seen("inbox", f"m{i}")
+
+
+XHS_NOTE = {
+    "platform": "xiaohongshu",
+    "title": "字节 Agent 面经",
+    "text": "一面问了 harness 的实现。",
+    "author": "某同学",
+    "time": None,
+    "tags": ["面经", "agent"],
+    "images": ["https://sns-img.xhscdn.com/a.jpg", "https://sns-img.xhscdn.com/b.jpg"],
+    "ocr": ["第一张图上的题目", "第二张图上的题目"],
+    "url": "https://www.xiaohongshu.com/explore/abc?xsec_token=T",
+}
+
+
+class TestIsCaptureUrl:
+    def test_xiaohongshu_hosts(self):
+        assert is_capture_url("https://www.xiaohongshu.com/explore/abc?xsec_token=T")
+        assert is_capture_url("http://xhslink.com/a/xyz")
+
+    def test_everything_else(self):
+        assert not is_capture_url("https://example.com/a")
+        assert not is_capture_url("")
+
+
+class TestCaptureNote:
+    @patch("subscriber.fetch.subprocess.run")
+    def test_runs_capture_with_ocr_and_json(self, mock_run):
+        """小红书 posts keep the substance inside screenshots, so the OCR pass
+        is the point — without it the note is a caption and a tag list."""
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(XHS_NOTE))
+        capture_note(XHS_NOTE["url"])
+        cmd = mock_run.call_args[0][0]
+        assert "--ocr" in cmd and "--json" in cmd
+        assert XHS_NOTE["url"] in cmd
+        assert cmd[0].endswith("capture.py")
+
+    @patch("subscriber.fetch.subprocess.run")
+    def test_title_body_and_ocr_rendered(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(XHS_NOTE))
+        out = capture_note(XHS_NOTE["url"])
+        assert "字节 Agent 面经" in out
+        assert "一面问了 harness 的实现。" in out
+        assert "第一张图上的题目" in out and "第二张图上的题目" in out
+
+    @patch("subscriber.fetch.subprocess.run")
+    def test_images_land_in_the_image_section(self, mock_run):
+        """Same `## 图片` block as any other article, so the compile agent has
+        one shape to recognise."""
+        mock_run.return_value = MagicMock(returncode=0, stdout=json.dumps(XHS_NOTE))
+        out = capture_note(XHS_NOTE["url"])
+        body, _, imgs = out.partition("## 图片")
+        assert "![](https://sns-img.xhscdn.com/a.jpg)" in imgs
+        assert "![](https://sns-img.xhscdn.com/b.jpg)" in imgs
+
+    @patch("subscriber.fetch.subprocess.run")
+    def test_capture_failure_raises(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="note is empty")
+        with pytest.raises(RuntimeError, match="note is empty"):
+            capture_note(XHS_NOTE["url"])
+
+
+class TestInboxCaptureRouting:
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch.capture_note", return_value="小红书笔记正文")
+    @patch("subscriber.fetch.fetch_and_extract", return_value="trafilatura 的结果")
+    @patch("subscriber.fetch._agentmail_client")
+    def test_xhs_link_goes_through_capture(self, mock_cls, mock_extract, mock_capture, state):
+        client = mock_cls.return_value
+        _wire(client, [_make_msg("m1", "面经", body=XHS_NOTE["url"])])
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        updates = fetch_inbox(source, state, max_items=5)
+        assert updates[0].content == "小红书笔记正文"
+        mock_capture.assert_called_once_with(XHS_NOTE["url"])
+        mock_extract.assert_not_called()
+
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch.capture_note", side_effect=RuntimeError("xsec_token 没了"))
+    @patch("subscriber.fetch.fetch_and_extract", return_value="trafilatura 的结果")
+    @patch("subscriber.fetch._agentmail_client")
+    def test_capture_failure_falls_back(self, mock_cls, mock_extract, mock_capture, state):
+        """A dead note or a stripped xsec_token must not lose the mail."""
+        client = mock_cls.return_value
+        _wire(client, [_make_msg("m1", "面经", body=XHS_NOTE["url"])])
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        updates = fetch_inbox(source, state, max_items=5)
+        assert updates[0].content == "trafilatura 的结果"
+
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch.capture_note")
+    @patch("subscriber.fetch._agentmail_client")
+    def test_pasted_body_never_captured(self, mock_cls, mock_capture, state):
+        """The link is only worth following when the mail is just the link."""
+        client = mock_cls.return_value
+        body = XHS_NOTE["url"] + "\n\n" + "正文" * 400
+        _wire(client, [_make_msg("m1", "面经", body=body)])
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        fetch_inbox(source, state, max_items=5)
+        mock_capture.assert_not_called()
 
 
 def _blank_pdf_bytes() -> bytes:
