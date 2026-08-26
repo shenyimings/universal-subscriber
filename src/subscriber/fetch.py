@@ -164,12 +164,51 @@ def fetch_page(source: dict, state: State) -> list[Update]:
     ]
 
 
-_URL_RE = re.compile(r"https?://\S+")
+# Mails carry protocol-relative links (`//host/path`) often enough that
+# requiring a scheme silently loses them.
+_URL_RE = re.compile(r"(?:https?:)?//[^\s)\]>\"']+")
+# An inbox mail is either a bare link to follow or the article body pasted in
+# full. Below this many characters we assume the former.
+LINK_ONLY_CHARS = 300
+
+
+# Pasted articles start with an image more often than with the article link.
+_ASSET_SUFFIXES = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".mp4", ".webm")
+
+
+def _normalize_url(url: str) -> str:
+    return "https:" + url if url.startswith("//") else url
+
+
+def _is_asset(url: str) -> bool:
+    path, _, query = url.lower().partition("?")
+    if path.endswith(_ASSET_SUFFIXES):
+        return True
+    # Image CDNs hide the type in the query (pbs.twimg.com/...?format=jpg).
+    return any(f"format={ext.lstrip('.')}" in query for ext in _ASSET_SUFFIXES)
+
+
+def _pick_link(text: str) -> str:
+    """First non-asset URL in a mail body, or "" if there is none."""
+    for url in _URL_RE.findall(text):
+        url = _normalize_url(url)
+        if not _is_asset(url):
+            return url
+    return ""
 
 
 def _agentmail_client(api_key: str):
     from agentmail import AgentMail
     return AgentMail(api_key=api_key)
+
+
+def message_body(client, inbox_id: str, msg) -> str:
+    """Full mail body. `messages.list` only carries a truncated preview."""
+    try:
+        full = client.inboxes.messages.get(inbox_id, msg.message_id)
+    except Exception:
+        return msg.preview or ""
+    return full.text or full.extracted_text or msg.preview or ""
 
 
 def fetch_inbox(source: dict, state: State, max_items: int) -> list[Update]:
@@ -192,15 +231,16 @@ def fetch_inbox(source: dict, state: State, max_items: int) -> list[Update]:
         if state.is_seen(name, item_id):
             continue
         if len(updates) < max_items:
-            content = msg.preview or ""
-            link = ""
-            urls = _URL_RE.findall(content)
-            if urls and len(content.split()) <= 10:
-                link = urls[0]
-                try:
-                    content = fetch_and_extract(link) or content
-                except Exception:
-                    pass
+            content = message_body(client, inbox_id, msg)
+            link = _pick_link(content)
+            if link:
+                # A pasted article is already the content; re-fetching would
+                # replace it with whatever the first link in it points at.
+                if len(content) <= LINK_ONLY_CHARS:
+                    try:
+                        content = fetch_and_extract(link) or content
+                    except Exception:
+                        pass
             updates.append(
                 Update(
                     source=name,

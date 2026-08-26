@@ -6,6 +6,7 @@ import pytest
 
 from subscriber.fetch import (
     Update,
+    _pick_link,
     fetch_and_extract,
     fetch_rss,
     fetch_page,
@@ -124,13 +125,45 @@ class TestFetchPage:
             fetch_page(source, state)
 
 
-def _make_msg(message_id, subject="Test", preview="body text", labels=None):
+class TestPickLink:
+    def test_scheme_relative_normalized(self):
+        assert _pick_link("see //example.com/a") == "https://example.com/a"
+
+    def test_trailing_markdown_punctuation_dropped(self):
+        assert _pick_link("[x](https://example.com/a.pdf)") == "https://example.com/a.pdf"
+
+    def test_images_skipped(self):
+        body = "![](https://pica.zhimg.com/v2-abc_1440w.jpg)\n正文 https://example.com/post"
+        assert _pick_link(body) == "https://example.com/post"
+
+    def test_image_declared_in_query_skipped(self):
+        body = "https://pbs.twimg.com/media/HN?format=jpg&name=large https://example.com/post"
+        assert _pick_link(body) == "https://example.com/post"
+
+    def test_no_link(self):
+        assert _pick_link("纯文字，没有链接") == ""
+
+
+def _make_msg(message_id, subject="Test", body="body text", labels=None):
+    """A list-item message. `preview` is deliberately truncated: that is what
+    the real API returns there, and reading it instead of the full body is
+    what made a pasted article arrive as a one-line teaser."""
     msg = MagicMock()
     msg.message_id = message_id
     msg.subject = subject
-    msg.preview = preview
+    msg.preview = body[:20]
+    msg.text = body
     msg.labels = labels or ["received", "unread"]
     return msg
+
+
+def _wire(client, messages):
+    """Point both messages.list and messages.get at the same fake mails."""
+    resp = MagicMock()
+    resp.messages = messages
+    client.inboxes.messages.list.return_value = resp
+    by_id = {m.message_id: m for m in messages}
+    client.inboxes.messages.get.side_effect = lambda inbox_id, mid: by_id[mid]
 
 
 class TestFetchInbox:
@@ -138,9 +171,7 @@ class TestFetchInbox:
     @patch("subscriber.fetch._agentmail_client")
     def test_new_messages_returned(self, mock_cls, state):
         client = mock_cls.return_value  # _agentmail_client(key) returns this
-        resp = MagicMock()
-        resp.messages = [_make_msg("m1", "Hello", preview="some content")]
-        client.inboxes.messages.list.return_value = resp
+        _wire(client, [_make_msg("m1", "Hello", body="some content")])
         source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
         updates = fetch_inbox(source, state, max_items=5)
         assert len(updates) == 1
@@ -152,9 +183,7 @@ class TestFetchInbox:
     @patch("subscriber.fetch._agentmail_client")
     def test_sent_messages_skipped(self, mock_cls, state):
         client = mock_cls.return_value  # _agentmail_client(key) returns this
-        resp = MagicMock()
-        resp.messages = [_make_msg("m1", labels=["sent"])]
-        client.inboxes.messages.list.return_value = resp
+        _wire(client, [_make_msg("m1", labels=["sent"])])
         source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
         updates = fetch_inbox(source, state, max_items=5)
         assert len(updates) == 0
@@ -164,9 +193,7 @@ class TestFetchInbox:
     def test_already_seen_skipped(self, mock_cls, state):
         state.mark_seen("inbox", "m1")
         client = mock_cls.return_value  # _agentmail_client(key) returns this
-        resp = MagicMock()
-        resp.messages = [_make_msg("m1")]
-        client.inboxes.messages.list.return_value = resp
+        _wire(client, [_make_msg("m1")])
         source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
         updates = fetch_inbox(source, state, max_items=5)
         assert len(updates) == 0
@@ -176,9 +203,7 @@ class TestFetchInbox:
     @patch("subscriber.fetch._agentmail_client")
     def test_url_only_body_fetched(self, mock_cls, mock_extract, state):
         client = mock_cls.return_value  # _agentmail_client(key) returns this
-        resp = MagicMock()
-        resp.messages = [_make_msg("m1", "Link", preview="https://example.com/article")]
-        client.inboxes.messages.list.return_value = resp
+        _wire(client, [_make_msg("m1", "Link", body="https://example.com/article")])
         source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
         updates = fetch_inbox(source, state, max_items=5)
         assert len(updates) == 1
@@ -186,12 +211,36 @@ class TestFetchInbox:
         assert updates[0].link == "https://example.com/article"
 
     @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch.fetch_and_extract", return_value="extracted article")
+    @patch("subscriber.fetch._agentmail_client")
+    def test_protocol_relative_link_followed(self, mock_cls, mock_extract, state):
+        client = mock_cls.return_value
+        _wire(client, [_make_msg("m1", "Link", body="//example.com/article")])
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        updates = fetch_inbox(source, state, max_items=5)
+        assert updates[0].link == "https://example.com/article"
+        assert updates[0].content == "extracted article"
+
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
+    @patch("subscriber.fetch.fetch_and_extract", return_value="extracted article")
+    @patch("subscriber.fetch._agentmail_client")
+    def test_pasted_article_body_kept(self, mock_cls, mock_extract, state):
+        """A long body is the article itself — the link in it is metadata,
+        not something to go fetch and overwrite the body with."""
+        client = mock_cls.return_value
+        body = "原文链接 https://example.com/article\n\n" + "正文" * 400
+        _wire(client, [_make_msg("m1", "Pasted", body=body)])
+        source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
+        updates = fetch_inbox(source, state, max_items=5)
+        assert updates[0].content == body
+        assert updates[0].link == "https://example.com/article"
+        mock_extract.assert_not_called()
+
+    @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
     @patch("subscriber.fetch._agentmail_client")
     def test_max_items_limit(self, mock_cls, state):
         client = mock_cls.return_value  # _agentmail_client(key) returns this
-        resp = MagicMock()
-        resp.messages = [_make_msg(f"m{i}") for i in range(5)]
-        client.inboxes.messages.list.return_value = resp
+        _wire(client, [_make_msg(f"m{i}") for i in range(5)])
         source = {"name": "inbox", "type": "inbox", "inbox_id": "test@agentmail.to"}
         updates = fetch_inbox(source, state, max_items=2)
         assert len(updates) == 2

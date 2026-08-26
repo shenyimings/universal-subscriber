@@ -12,6 +12,11 @@ from openai import OpenAI
 from .fetch import Update
 
 
+# Below this, an "article" is a title plus a teaser. Asking the LLM to
+# summarize that yields a confident review of a piece nobody ever fetched.
+MIN_ARTICLE_CHARS = 200
+
+
 def _client(llm_cfg: dict) -> OpenAI:
     api_key = os.environ.get(llm_cfg.get("api_key_env", "DEEPSEEK_API_KEY"))
     if not api_key:
@@ -64,6 +69,9 @@ def build_digest(
     for source, items in by_source.items():
         section = [f"■ {source}"]
         for u in items:
+            if u.kind == "article" and len(u.content.strip()) < MIN_ARTICLE_CHARS:
+                print(f"[digest] 正文过短,跳过条目: {u.title}", file=sys.stderr)
+                continue
             try:
                 summary = summarize(u, llm_cfg, prompts, max_chars)
             except Exception as e:
