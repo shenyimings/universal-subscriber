@@ -91,6 +91,15 @@ class TestPendingSources:
         names = [p.name for p in pending_sources(tmp_path)]
         assert names == ["old.md", "new.md"]
 
+    def test_mixed_quoted_and_bare_dates(self, tmp_path):
+        """sources/ holds both `date: 2026-07-02` and `date: '2026-07-01'`;
+        YAML hands back a date for one and a str for the other."""
+        bare = _write_source(tmp_path, "bare.md", day="2026-07-02")
+        bare.write_text(bare.read_text().replace("date: '2026-07-02'", "date: 2026-07-02"))
+        _write_source(tmp_path, "quoted.md", day="2026-07-01")
+        names = [p.name for p in pending_sources(tmp_path)]
+        assert names == ["quoted.md", "bare.md"]
+
 
 class TestParsePlan:
     def test_fenced_json(self):

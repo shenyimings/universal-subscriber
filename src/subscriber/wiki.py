@@ -55,7 +55,9 @@ def pending_sources(wiki_dir: Path) -> list[Path]:
     for path in sorted((wiki_dir / "sources").rglob("*.md")):
         meta, _ = parse_front(path.read_text())
         if meta.get("compiled") is False:
-            files.append((meta.get("date", ""), path))
+            # YAML gives back a date for `date: 2026-08-26` and a str for the
+            # quoted form; both shapes exist in sources/ and don't compare.
+            files.append((str(meta.get("date", "")), path))
     return [p for _, p in sorted(files)]
 
 
