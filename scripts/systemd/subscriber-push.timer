@@ -1,0 +1,10 @@
+# ~/.config/systemd/user/subscriber-push.timer
+[Unit]
+Description=Consider pushing the wiki daily at 09:00 (script decides if it is due)
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

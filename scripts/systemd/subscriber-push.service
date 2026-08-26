@@ -1,0 +1,11 @@
+# ~/.config/systemd/user/subscriber-push.service — 把攒下的 wiki 更新推到远端
+# 每天触发，但脚本自带随机闸门：推成功后隔 1-3 天（随机）才会再推一次。
+[Unit]
+Description=subscriber wiki push (throttled to every 1-3 days)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/subscriber
+ExecStart=%h/subscriber/scripts/push_wiki.sh
+StandardOutput=append:%h/subscriber/data/run.log
+StandardError=append:%h/subscriber/data/run.log

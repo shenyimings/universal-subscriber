@@ -7,9 +7,8 @@ Type=oneshot
 WorkingDirectory=%h/subscriber/agent
 # agent 内部要 spawn uv（reindex / fetch_url），systemd 默认 PATH 找不到
 Environment=PATH=%h/.local/bin:%h/.local/node22/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.local/node22/bin/node src/main.ts --limit 1
+ExecStart=%h/.local/node22/bin/node src/main.ts --limit 3
 # qmd 检索索引跟着内容一起刷新；qmd 没装时不该拖垮整个 unit，故用 - 前缀
 ExecStart=-%h/.local/bin/uv run --directory %h/subscriber subscriber search --setup
-ExecStart=%h/subscriber/scripts/push_wiki.sh
 StandardOutput=append:%h/subscriber/data/run.log
 StandardError=append:%h/subscriber/data/run.log

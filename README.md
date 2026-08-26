@@ -98,11 +98,13 @@ Look for an RSS endpoint first — many sites have one without linking it: Subst
 
 ## Scheduled runs
 
-Two systemd user timers (no cron on this box; templates in `scripts/systemd/`, logs at `data/run.log`): `subscriber.timer` fetches and sends the digest at 08:00, `subscriber-wiki.timer` runs the compile agent at 02:30 — DeepSeek's off-peak window, which halves the token price.
+Three systemd user timers (no cron on this box; templates in `scripts/systemd/`, logs at `data/run.log`): `subscriber.timer` fetches and sends the digest at 08:00, `subscriber-wiki.timer` runs the compile agent at 02:30 — DeepSeek's off-peak window, which halves the token price — and `subscriber-push.timer` pushes the wiki repo at 09:00.
+
+Fetching and compiling happen every day; publishing does not. `scripts/push_wiki.sh` fires daily but keeps its own due date in `data/push_due`: after a successful push it picks a random 1-3 day gap before the next one, so a few days of updates land in one commit. Nothing to commit means the window is not consumed and it retries the next day. `scripts/push_wiki.sh --force` pushes immediately and re-rolls the gap.
 
 ```bash
 cp scripts/systemd/* ~/.config/systemd/user/ && systemctl --user daemon-reload
-systemctl --user enable --now subscriber.timer subscriber-wiki.timer
+systemctl --user enable --now subscriber.timer subscriber-wiki.timer subscriber-push.timer
 systemctl --user list-timers 'subscriber*'      # next run times
 systemctl --user start subscriber-wiki.service  # trigger once manually
 ```
