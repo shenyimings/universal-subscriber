@@ -41,8 +41,14 @@ index.md              catalog of the whole wiki, grouped by category
 index/<category>.md   the same catalog sliced per category — read these, not index.md
 pages/*.md            knowledge pages (Simplified Chinese), cross-linked with [[wikilinks]]
 sources/YYYY/MM/*.md  archived originals (immutable), with summary and full text
+imgs/*.png|jpg        figures kept from articles, embedded as ![[name.png]]
 log.md                append-only compile log (rarely worth reading)
 ```
+
+- Sources link their originals' images rather than copying them (a `## 图片`
+  section of plain URLs); only figures worth keeping are downloaded into
+  `imgs/`, so a page embed always resolves locally while a source's image
+  links may have rotted.
 
 - `index.md` sections look like `## agent-engineering`; each entry is
   `- [[page-stem]] `tag1` `tag2` — one-line description`. `index/` holds one
