@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def extract_pdf_text(data: bytes) -> str | None:
     return text.strip() or None
 
 
-def fetch_and_extract(url: str) -> str | None:
+def fetch_and_extract(url: str, with_images: bool = False) -> str | None:
     """GET a URL and extract its article text, handling PDFs (e.g. arXiv links)
     separately from HTML — feeding raw PDF bytes to the HTML extractor produces
     garbage (undecodable binary passed straight through as "text").
@@ -80,7 +81,12 @@ def fetch_and_extract(url: str) -> str | None:
         resp.close()
     if _is_pdf(url, content_type, data[:8]):
         return extract_pdf_text(data)
-    return extract_text(data.decode(encoding, "replace"), url=url)
+    html = data.decode(encoding, "replace")
+    text = extract_text(html, url=url)
+    if not with_images or not text:
+        return text
+    images = extract_images(html, url)
+    return f"{text}\n\n{image_section(images)}" if images else text
 
 
 def browser_get_text(url: str, selector: str | None = None) -> str:
@@ -99,6 +105,67 @@ def extract_text(html: str, url: str) -> str | None:
     return trafilatura.extract(html, url=url, include_links=False)
 
 
+# The compile agent decides which figures are worth keeping, so recall here
+# matters more than precision: collect the page's images liberally, cap the
+# count, and only drop what is never article content.
+MAX_IMAGES = 20
+# Lazy-loading sites (知乎, 公众号) park a data: placeholder in src and keep
+# the real image in one of these; whichever comes first wins.
+_IMG_SRC_ATTRS = ("data-src", "data-original", "data-actualsrc", "src")
+_IMG_CHROME_RE = re.compile(
+    r"avatar|logo|icon|emoji|sprite|spacer|blank|pixel|qrcode|qr_code|badge|button",
+    re.I,
+)
+
+
+def _is_chrome(url: str, elem) -> bool:
+    """Site furniture rather than article content."""
+    if url.startswith("data:") or url.lower().split("?")[0].endswith(".svg"):
+        return True
+    # the URL can be innocent while the alt or the class gives it away
+    # (Trail of Bits serves its logo from /img/tob.png)
+    if any(_IMG_CHROME_RE.search(v) for v in (url, elem.get("alt", ""), elem.get("class", ""))):
+        return True
+    for attr in ("width", "height"):
+        value = elem.get(attr, "")
+        if value.isdigit() and int(value) <= 32:
+            return True
+    return False
+
+
+def extract_images(html: str, url: str, limit: int = MAX_IMAGES) -> list[tuple[str, str]]:
+    """(absolute url, alt) for a page's content images, in document order.
+
+    trafilatura's include_images drops them on most of the pages this project
+    ingests, so the img elements are read straight off the tree instead.
+    """
+    from urllib.parse import urljoin
+
+    from lxml import html as lxml_html
+
+    try:
+        tree = lxml_html.fromstring(html)
+    except Exception:
+        return []
+    seen: dict[str, str] = {}
+    for elem in tree.iter("img"):
+        src = next((elem.get(a) for a in _IMG_SRC_ATTRS if elem.get(a)), None)
+        if not src or _is_chrome(src, elem):
+            continue
+        absolute = urljoin(url, src.strip())
+        if absolute not in seen:
+            seen[absolute] = (elem.get("alt") or "").strip()
+        if len(seen) >= limit:
+            break
+    return list(seen.items())
+
+
+def image_section(images: list[tuple[str, str]]) -> str:
+    """The `## 图片` block appended to an archived source: links, not copies."""
+    lines = "\n".join(f"![{alt}]({url})" for url, alt in images)
+    return f"## 图片\n\n{lines}"
+
+
 def fetch_rss(source: dict, state: State, max_items: int) -> list[Update]:
     name = source["name"]
     feed = feedparser.parse(http_get(source["url"]))
@@ -114,7 +181,7 @@ def fetch_rss(source: dict, state: State, max_items: int) -> list[Update]:
             link = entry.get("link", "")
             content = None
             try:
-                content = fetch_and_extract(link)
+                content = fetch_and_extract(link, with_images=True)
             except Exception:
                 pass  # fall back to the feed's own summary
             if not content:
@@ -164,12 +231,101 @@ def fetch_page(source: dict, state: State) -> list[Update]:
     ]
 
 
-_URL_RE = re.compile(r"https?://\S+")
+# Mails carry protocol-relative links (`//host/path`) often enough that
+# requiring a scheme silently loses them.
+_URL_RE = re.compile(r"(?:https?:)?//[^\s)\]>\"']+")
+# An inbox mail is either a bare link to follow or the article body pasted in
+# full. Below this many characters we assume the former.
+LINK_ONLY_CHARS = 300
+
+
+# Pasted articles start with an image more often than with the article link.
+_ASSET_SUFFIXES = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".mp4", ".webm")
+
+
+def _normalize_url(url: str) -> str:
+    return "https:" + url if url.startswith("//") else url
+
+
+def _is_asset(url: str) -> bool:
+    path, _, query = url.lower().partition("?")
+    if path.endswith(_ASSET_SUFFIXES):
+        return True
+    # Image CDNs hide the type in the query (pbs.twimg.com/...?format=jpg).
+    return any(f"format={ext.lstrip('.')}" in query for ext in _ASSET_SUFFIXES)
+
+
+def _pick_link(text: str) -> str:
+    """First non-asset URL in a mail body, or "" if there is none."""
+    for url in _URL_RE.findall(text):
+        url = _normalize_url(url)
+        if not _is_asset(url):
+            return url
+    return ""
+
+
+# 小红书 keeps the substance inside screenshots, and trafilatura sees only the
+# caption. skill/interview-capture/capture.py already parses __INITIAL_STATE__
+# and OCRs imageList, so route those links through it instead.
+_CAPTURE_HOSTS = ("xiaohongshu.com", "xhslink.com")
+CAPTURE_SCRIPT = Path(__file__).resolve().parents[2] / "skill/interview-capture/capture.py"
+CAPTURE_TIMEOUT = 300  # OCR runs ~6s per image on CPU
+
+
+def is_capture_url(url: str) -> bool:
+    return any(host in url for host in _CAPTURE_HOSTS)
+
+
+def capture_note(url: str) -> str:
+    """Markdown for one 小红书 note: caption, OCR of each screenshot, images."""
+    import json
+
+    proc = subprocess.run(
+        [str(CAPTURE_SCRIPT), url, "--ocr", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=CAPTURE_TIMEOUT,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"capture.py 失败: {proc.stderr.strip()[:300]}")
+    note = json.loads(proc.stdout)
+
+    parts = []
+    if note.get("title"):
+        parts.append(f"# {note['title']}")
+    if note.get("text"):
+        parts.append(note["text"])
+    for i, block in enumerate(note.get("ocr") or []):
+        parts.append(f"## 图 {i + 1} (OCR)\n\n{block}")
+    images = [(u, "") for u in note.get("images") or []]
+    if images:
+        parts.append(image_section(images))
+    return "\n\n".join(parts)
 
 
 def _agentmail_client(api_key: str):
     from agentmail import AgentMail
     return AgentMail(api_key=api_key)
+
+
+def message_body(client, inbox_id: str, msg) -> str:
+    """Full mail body. `messages.list` only carries a truncated preview."""
+    try:
+        full = client.inboxes.messages.get(inbox_id, msg.message_id)
+    except Exception:
+        return msg.preview or ""
+    return full.text or full.extracted_text or msg.preview or ""
+
+
+def _follow(link: str) -> str | None:
+    """Fetch a link-only mail's article, preferring a dedicated parser."""
+    if is_capture_url(link):
+        try:
+            return capture_note(link)
+        except Exception as exc:
+            # a deleted note or a stripped xsec_token must not lose the mail
+            print(f"[fetch] capture.py 失败,退回通用抽取: {exc}", file=sys.stderr)
+    return fetch_and_extract(link, with_images=True)
 
 
 def fetch_inbox(source: dict, state: State, max_items: int) -> list[Update]:
@@ -192,15 +348,16 @@ def fetch_inbox(source: dict, state: State, max_items: int) -> list[Update]:
         if state.is_seen(name, item_id):
             continue
         if len(updates) < max_items:
-            content = msg.preview or ""
-            link = ""
-            urls = _URL_RE.findall(content)
-            if urls and len(content.split()) <= 10:
-                link = urls[0]
-                try:
-                    content = fetch_and_extract(link) or content
-                except Exception:
-                    pass
+            content = message_body(client, inbox_id, msg)
+            link = _pick_link(content)
+            if link:
+                # A pasted article is already the content; re-fetching would
+                # replace it with whatever the first link in it points at.
+                if len(content) <= LINK_ONLY_CHARS:
+                    try:
+                        content = _follow(link) or content
+                    except Exception:
+                        pass
             updates.append(
                 Update(
                     source=name,

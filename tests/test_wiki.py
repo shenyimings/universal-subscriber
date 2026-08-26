@@ -91,6 +91,15 @@ class TestPendingSources:
         names = [p.name for p in pending_sources(tmp_path)]
         assert names == ["old.md", "new.md"]
 
+    def test_mixed_quoted_and_bare_dates(self, tmp_path):
+        """sources/ holds both `date: 2026-07-02` and `date: '2026-07-01'`;
+        YAML hands back a date for one and a str for the other."""
+        bare = _write_source(tmp_path, "bare.md", day="2026-07-02")
+        bare.write_text(bare.read_text().replace("date: '2026-07-02'", "date: 2026-07-02"))
+        _write_source(tmp_path, "quoted.md", day="2026-07-01")
+        names = [p.name for p in pending_sources(tmp_path)]
+        assert names == ["quoted.md", "bare.md"]
+
 
 class TestParsePlan:
     def test_fenced_json(self):
@@ -236,6 +245,33 @@ class TestIndexAndLint:
         assert "- [[beta]] — 第二页" in index
         assert index.index("## ai-security") < index.index("## uncategorized")
 
+    def test_rebuild_index_writes_category_slices(self, tmp_path):
+        _write_page(tmp_path, "alpha", description="第一页",
+                    category="ai-security", tags=["fuzzing", "llm-agent"])
+        _write_page(tmp_path, "gamma", description="第三页",
+                    category="ai-security", tags=["fuzzing"])
+        _write_page(tmp_path, "beta", description="第二页")
+        rebuild_index(tmp_path)
+
+        slice_ = (tmp_path / "index" / "ai-security.md").read_text()
+        assert slice_.startswith("# ai-security\n")
+        assert "2 个页面。本分类标签：`fuzzing` `llm-agent`" in slice_
+        assert "- [[alpha]] `fuzzing` `llm-agent` — 第一页" in slice_
+        assert "[[beta]]" not in slice_
+        assert (tmp_path / "index" / "uncategorized.md").exists()
+        assert not (tmp_path / "index" / "llm-systems.md").exists()
+
+    def test_rebuild_index_prunes_emptied_category_slices(self, tmp_path):
+        _write_page(tmp_path, "alpha", category="ai-security")
+        rebuild_index(tmp_path)
+        assert (tmp_path / "index" / "ai-security.md").exists()
+
+        (tmp_path / "pages" / "alpha.md").unlink()
+        _write_page(tmp_path, "beta", category="llm-systems")
+        rebuild_index(tmp_path)
+        assert not (tmp_path / "index" / "ai-security.md").exists()
+        assert (tmp_path / "index" / "llm-systems.md").exists()
+
     def test_category_index_filters_by_category(self, tmp_path):
         from subscriber.wiki import category_index
         _write_page(tmp_path, "alpha", description="第一页", category="ai-security")
@@ -328,3 +364,19 @@ class TestFixWikilinks:
         prompt = mock_chat.call_args.args[1]
         # 22 个链接 * 10% = 2 次保留配额
         assert prompt.endswith("|22|2|2")
+
+
+class TestImageEmbedsInLint:
+    def test_image_embed_is_not_a_broken_wikilink(self, tmp_path):
+        """![[x.png]] is a figure in wiki/imgs, not a page that failed to
+        exist; the lint must not report it, nor --fix rewrite it."""
+        _write_page(tmp_path, "a", body="正文\n\n![[harness-arch.png]]\n")
+        (tmp_path / "imgs").mkdir()
+        (tmp_path / "imgs" / "harness-arch.png").write_bytes(b"x")
+        issues = lint_wiki(tmp_path)
+        assert not any("harness-arch" in i for i in issues)
+
+    def test_missing_image_reported(self, tmp_path):
+        _write_page(tmp_path, "a", body="正文\n\n![[gone.png]]\n")
+        issues = lint_wiki(tmp_path)
+        assert any("gone.png" in i and "imgs" in i for i in issues)

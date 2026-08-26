@@ -9,6 +9,7 @@ import {
 	markCompiled,
 	parseFront,
 	pendingSources,
+	splitImageSection,
 	validatePage,
 } from "../src/wiki.ts";
 
@@ -30,8 +31,15 @@ test("parseFront/dumpFront 往返", () => {
 	assert.deepEqual(meta2, meta);
 });
 
+function wikiWithImage(name?: string): string {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-img-"));
+	fs.mkdirSync(path.join(dir, "imgs"), { recursive: true });
+	if (name) fs.writeFileSync(path.join(dir, "imgs", name), "fake bytes");
+	return dir;
+}
+
 test("validatePage 通过合规页面", () => {
-	assert.deepEqual(validatePage("test-page.md", PAGE), []);
+	assert.deepEqual(validatePage("test-page.md", PAGE, wikiWithImage()), []);
 });
 
 test("validatePage 抓住违规", () => {
@@ -43,7 +51,7 @@ tags:
 ---
 正文 [[中文链接]]
 `;
-	const problems = validatePage("Bad Name.md", bad);
+	const problems = validatePage("Bad Name.md", bad, wikiWithImage());
 	assert.equal(problems.length, 5);
 	assert.match(problems.join("\n"), /文件名/);
 	assert.match(problems.join("\n"), /description/);
@@ -53,7 +61,7 @@ tags:
 });
 
 test("validatePage 拒绝缺 frontmatter", () => {
-	assert.match(validatePage("a.md", "没有 frontmatter")[0], /frontmatter/);
+	assert.match(validatePage("a.md", "没有 frontmatter", wikiWithImage())[0], /frontmatter/);
 });
 
 test("pendingSources 按 date 排序且跳过已编译", () => {
@@ -109,4 +117,62 @@ test("appendSourceRef 建段、去重、追加", () => {
 	assert.match(text, /- \[第一篇\]\(\.\.\/sources\/2026\/07\/one\.md\)（Blog A，2026-07-01）/);
 	assert.match(text, /- \[第二篇\]\(\.\.\/sources\/2026\/07\/two\.md\)\n/);
 	fs.rmSync(dir, { recursive: true });
+});
+
+test("validatePage 接受指向已存在图片的 ![[x]]", () => {
+	const dir = wikiWithImage("harness-arch.png");
+	const page = `${PAGE}\n![[harness-arch.png]]\n`;
+	assert.deepEqual(validatePage("test-page.md", page, dir), []);
+	fs.rmSync(dir, { recursive: true });
+});
+
+test("validatePage 拒绝 imgs/ 里不存在的图片", () => {
+	const dir = wikiWithImage();
+	const page = `${PAGE}\n![[missing.png]]\n`;
+	const problems = validatePage("test-page.md", page, dir);
+	assert.equal(problems.length, 1);
+	assert.match(problems[0], /missing\.png/);
+	assert.match(problems[0], /imgs/);
+	fs.rmSync(dir, { recursive: true });
+});
+
+test("validatePage 拒绝不规范的图片名", () => {
+	const dir = wikiWithImage("Harness Arch.PNG");
+	const page = `${PAGE}\n![[Harness Arch.PNG]]\n`;
+	const problems = validatePage("test-page.md", page, dir);
+	assert.equal(problems.length, 1);
+	assert.match(problems[0], /小写/);
+	fs.rmSync(dir, { recursive: true });
+});
+
+test("图片嵌入不被当成普通 wikilink 校验", () => {
+	// [[a.md]] 会因为带点被判非法页面名；![[a.png]] 是图片，走另一条规则
+	const dir = wikiWithImage("fig-1.png");
+	assert.deepEqual(validatePage("test-page.md", `${PAGE}\n![[fig-1.png]]\n`, dir), []);
+	fs.rmSync(dir, { recursive: true });
+});
+
+test("splitImageSection 把图片段从正文里摘出来", () => {
+	const { text, images } = splitImageSection(
+		"正文一段\n\n## 图片\n\n![架构图](https://cdn.example.com/a.png)\n![](https://cdn.example.com/b.jpg)\n",
+	);
+	assert.equal(text, "正文一段");
+	assert.match(images, /## 图片/);
+	assert.match(images, /a\.png/);
+	assert.match(images, /b\.jpg/);
+});
+
+test("splitImageSection 没有图片段时原样返回", () => {
+	const { text, images } = splitImageSection("只有正文");
+	assert.equal(text, "只有正文");
+	assert.equal(images, "");
+});
+
+test("图片段不受正文截断影响", () => {
+	// 正文被 max_chars 砍掉时，段在末尾的图片链接会一起消失——先摘再砍。
+	const long = "正".repeat(9000);
+	const { text, images } = splitImageSection(`${long}\n\n## 图片\n\n![](https://cdn.example.com/a.png)\n`);
+	const sliced = text.slice(0, 6000);
+	assert.equal(sliced.length, 6000);
+	assert.match(images, /a\.png/);
 });

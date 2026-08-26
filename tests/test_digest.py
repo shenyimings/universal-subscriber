@@ -2,12 +2,14 @@
 
 from unittest.mock import MagicMock, patch
 
-from subscriber.digest import build_digest, summarize
+from subscriber.digest import MIN_ARTICLE_CHARS, build_digest, summarize
 from subscriber.fetch import Update
 
 
-def _make_update(source="src", title="Title", kind="article"):
-    return Update(source=source, title=title, link="https://x.com", content="body", kind=kind)
+def _make_update(source="src", title="Title", kind="article", content=None):
+    # Long enough to clear MIN_ARTICLE_CHARS unless a test says otherwise.
+    body = "body " * 60 if content is None else content
+    return Update(source=source, title=title, link="https://x.com", content=body, kind=kind)
 
 
 LLM_CFG = {"base_url": "https://api.test", "model": "test", "api_key_env": "TEST_KEY"}
@@ -110,3 +112,17 @@ class TestBuildDigest:
         seen = []
         build_digest([_make_update()], LLM_CFG, PROMPTS, 6000, on_keep=lambda u, s: seen.append(u))
         assert seen == []
+
+    @patch("subscriber.digest.summarize")
+    def test_thin_article_skipped_without_llm_call(self, mock_sum):
+        """A title-only mail must not reach the LLM: it would happily write a
+        confident review of an article nobody fetched."""
+        thin = _make_update(content="x" * (MIN_ARTICLE_CHARS - 1))
+        assert build_digest([thin], LLM_CFG, PROMPTS, max_chars=1000) is None
+        mock_sum.assert_not_called()
+
+    @patch("subscriber.digest.summarize", return_value="摘要")
+    def test_short_page_change_still_summarized(self, mock_sum):
+        """The floor is for articles only — a one-line page diff is real."""
+        u = _make_update(kind="page_change", content="+ tiny diff")
+        assert build_digest([u], LLM_CFG, PROMPTS, max_chars=1000) is not None

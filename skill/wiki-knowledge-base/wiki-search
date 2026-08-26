@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Layered qmd search over an llm-wiki repo. Ships inside the wiki itself.
+
+Companion to SKILL.md: an LLM that clones the wiki gets the retrieval logic as
+one command instead of having to rebuild it from four qmd calls every session.
+
+  ./wiki-search "沙箱 逃逸"              # keyword (BM25), the default
+  ./wiki-search "怎么隔离代理" --semantic  # vector similarity (needs `qmd embed`)
+  ./wiki-search "TOCTOU" --deep          # always include sources
+  ./wiki-search -n 10 "评估"
+
+Why not one qmd collection over the whole wiki: sources/ is several times the
+volume of pages/ and restates the same material almost verbatim, so a merged
+ranking buries the curated pages under raw archive text. This queries pages
+first, escalates to sources only when the page layer comes up weak, and maps
+source hits back up through their `pages:` frontmatter.
+
+Self-locating (wiki dir = this file's ../..) and self-registering: it re-points
+the qmd collections whenever the wiki has moved, which it has every time the
+repo was cloned to a fresh path.
+
+Needs python3 and qmd (`npm install -g @tobilu/qmd`); no other dependencies.
+"""
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+WIKI = Path(__file__).resolve().parent.parent.parent
+# 集合名跟目录名走，同一台机器上挂多个 wiki 也不会互相覆盖
+PREFIX = WIKI.name
+MODES = {"keyword": "search", "semantic": "vsearch", "hybrid": "query"}
+# pages 最高分低于此值就算「没答上」，下探 sources
+WEAK_SCORE = 0.5
+
+
+def qmd(*args: str, check: bool = True) -> str:
+    proc = subprocess.run(["qmd", *args], capture_output=True, text=True)
+    if check and proc.returncode != 0:
+        sys.exit(f"qmd {' '.join(args)} 失败：{proc.stderr.strip()[:300]}")
+    return proc.stdout
+
+
+def ensure_collections() -> None:
+    """Register the two collections, re-pointing any that the wiki outgrew."""
+    stale = False
+    for name, path in ((f"{PREFIX}-pages", WIKI / "pages"), (f"{PREFIX}-sources", WIKI / "sources")):
+        if not path.is_dir():
+            sys.exit(f"{path} 不存在：这不像一个 llm-wiki 仓库")
+        shown = qmd("collection", "show", name)
+        m = re.search(r"^\s*Path:\s*(.+)$", shown, re.MULTILINE)
+        if m and Path(m.group(1).strip()) == path:
+            continue
+        if m:  # 同名集合指向别处（仓库被重新克隆过），先摘掉
+            qmd("collection", "remove", name)
+        qmd("collection", "add", str(path), "--name", name)
+        stale = True
+    if stale:
+        qmd("update")
+
+
+# qmd 的 qmd:// 路径是 slug 化的（`a--b.md` 变成 `a-b.md`），不是磁盘上的相对
+# 路径，所以命中回文件要反解。不猜 qmd 的 slug 规则，两边都压成「只留字母数字
+# 和汉字」再比对；归档文件名都带 8 位 hash 后缀，撞不上。
+SQUASH = re.compile(r"[^0-9a-z一-鿿/]+")
+
+
+def resolve(base: Path, name: str) -> Path | None:
+    """Map a qmd-reported relative path back onto the file on disk."""
+    direct = base / name
+    if direct.exists():
+        return direct
+    want = SQUASH.sub("", name.lower())
+    for path in base.rglob("*.md"):
+        if SQUASH.sub("", path.relative_to(base).as_posix().lower()) == want:
+            return path
+    return None
+
+
+def front(base: Path, name: str) -> dict:
+    """Frontmatter fields this script needs — plain scalars and lists of strings."""
+    path = resolve(base, name)
+    if not path:
+        return {}
+    text = path.read_text(errors="replace")
+    if not text.startswith("---\n"):
+        return {}
+    end = text.find("\n---", 4)
+    meta: dict = {}
+    key = None
+    for line in text[4 : end if end > 0 else len(text)].splitlines():
+        # 列表项两种风格都要认：wiki.py 写的齐头 `- x`，agent 侧写的缩进 `  - x`
+        if line.lstrip().startswith("- ") and key:
+            meta.setdefault(key, []).append(line.lstrip()[2:].strip().strip("'\""))
+            continue
+        # 只认不缩进的 key，缩进行是续行或嵌套，不该当成顶层字段
+        m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2).strip().strip("'\"")
+        meta[key] = value if value else []
+    return meta
+
+
+def query(collection: str, text: str, mode: str, limit: int) -> list[dict]:
+    out = qmd(MODES[mode], text, "-c", collection, "-n", str(limit), "--format", "json").strip()
+    if not out:
+        return []
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return []
+
+
+def rel(file: str, collection: str) -> str:
+    prefix = f"qmd://{collection}/"
+    return file[len(prefix):] if file.startswith(prefix) else file
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="分层检索 llm-wiki：pages 优先，必要时下探 sources")
+    ap.add_argument("query", help="检索词；keyword 模式下词间是 AND，用 1-3 个特征词")
+    ap.add_argument("-n", "--limit", type=int, default=5, help="每层返回几条（默认 5）")
+    ap.add_argument("--semantic", action="store_const", const="semantic", dest="mode",
+                    help="向量近似检索，适合措辞不会字面出现的问题（需先跑 qmd embed）")
+    ap.add_argument("--hybrid", action="store_const", const="hybrid", dest="mode",
+                    help="混合检索 + LLM 重排，质量最好但慢")
+    ap.add_argument("--deep", action="store_true", help="无论 pages 命中如何都下探 sources")
+    ap.set_defaults(mode="keyword")
+    args = ap.parse_args()
+
+    ensure_collections()
+    pages_col, sources_col = f"{PREFIX}-pages", f"{PREFIX}-sources"
+
+    mode = args.mode
+    hits = query(pages_col, args.query, mode, args.limit)
+    # BM25 只认 wiki 里字面出现过的说法，用自己的话提问必然 0 命中（实测
+    # 「成本治理」命中、「控制花销」不命中）。0 命中就是「只有向量检索能救」的
+    # 证据，没必要让调用方多跑一轮才发现。
+    if mode == "keyword" and not hits:
+        print("keyword 字面检索 0 命中，改用语义检索（较慢，需要 qmd embed 过）…",
+              file=sys.stderr)
+        mode = "semantic"
+        hits = query(pages_col, args.query, mode, args.limit)
+        if not hits:
+            print("（keyword 与 semantic 均无命中；若从未跑过 qmd embed，语义索引是空的）")
+
+    if hits:
+        print("## pages（沉淀页面，优先读这些）")
+        for hit in hits:
+            name = rel(hit.get("file", ""), pages_col)
+            meta = front(WIKI / "pages", name)
+            cat = meta.get("category") or "?"
+            print(f"- pages/{name}  {hit.get('score', 0):.2f}  [{cat}]")
+            if meta.get("description"):
+                print(f"    {meta['description']}")
+    else:
+        print("## pages 无命中")
+
+    best = max((h.get("score", 0) for h in hits), default=0)
+    if not (args.deep or best < WEAK_SCORE):
+        return
+
+    known = {rel(h.get("file", ""), pages_col) for h in hits}
+    print()
+    src_hits = query(sources_col, args.query, mode, args.limit)
+    if not src_hits:
+        print("## sources 无命中")
+        return
+    print("## sources（原始归档，取证或页面未覆盖时用）")
+    for hit in src_hits:
+        name = rel(hit.get("file", ""), sources_col)
+        meta = front(WIKI / "sources", name)
+        compiled = str(meta.get("compiled", "")).lower() == "true"
+        print(f"- sources/{name}  {hit.get('score', 0):.2f}" + ("" if compiled else "  未编译"))
+        if meta.get("title"):
+            print(f"    {meta['title']}")
+        if meta.get("url"):
+            print(f"    {meta['url']}")
+        onward = [p for p in meta.get("pages") or [] if p not in known]
+        if onward:
+            print(f"    已沉淀进: {', '.join(onward)}（读这些页面，别停在源上）")
+
+
+if __name__ == "__main__":
+    main()

@@ -20,6 +20,10 @@ uv run subscriber wiki                                # compile archived sources
 uv run subscriber wiki --limit 10                     # compile at most 10 sources this run
 uv run subscriber wiki --lint                         # health check: broken links, orphan pages, backlog
 uv run subscriber wiki --lint --fix                   # LLM-assisted broken-link repair, then the health check
+
+uv run subscriber search "agent 沙箱"                  # search the wiki: pages first, sources as fallback
+uv run subscriber search "沙箱逃逸" --mode semantic     # vector search, for wording that won't match literally
+uv run subscriber search --setup                      # register/refresh the qmd index
 ```
 
 On the first run: RSS sources take the newest `max_items_per_source` entries and mark the rest as read; `page` sources record a baseline snapshot and only report a summary once the page changes.
@@ -37,6 +41,7 @@ wiki/
   sources/YYYY/MM/*.md   archived articles: frontmatter + summary + full text (immutable)
   pages/*.md             curated knowledge pages, cross-linked with [[wikilinks]]
   index.md               one line per page, grouped by category with tags, rebuilt from page frontmatter on every compile
+  index/<category>.md    the same catalog sliced per category, so a reader loads one category instead of all of them
   log.md                 append-only ingest log
 ```
 
@@ -54,7 +59,21 @@ Pages belong to one of a fixed set of categories and carry a few tags from a sha
 
 Wikilinks pointing at pages that do not exist yet are allowed on purpose — they mark concepts worth writing up later. `subscriber wiki --lint --fix` keeps this from getting out of hand: it has the LLM redirect near-miss names to existing pages, degrade links not worth a page to plain text, and keep the genuinely valuable ones (marked as unbuilt) within a fixed share of all links. The text replacements are applied by code; the LLM only rules on each link.
 
-The wiki is plain markdown with YAML frontmatter and `[[wikilinks]]`, so it opens directly in Obsidian, and any LLM agent pointed at the directory can answer questions from it — read `index.md` first, then follow links. Since it is just files, syncing it elsewhere is a `git push`: keep the wiki directory in a private repo and you can attach the same knowledge base to whatever tool you use, on any machine, without running a server.
+## Searching the wiki
+
+The index only carries a one-line description per page, so a question phrased in the reader's own words often matches no page name. `subscriber search` fills that gap on top of [qmd](https://github.com/tobi/qmd), a local markdown search engine (`npm i -g @tobilu/qmd`).
+
+`pages/` and `sources/` are indexed as two separate qmd collections, never one: the archive is several times the volume of the curated pages and restates the same material almost verbatim, so a single merged ranking buries the pages under raw source text. The search therefore escalates instead of merging — query the pages, and only when the best hit is weak (or with `--deep`) go down to the sources; a source hit is then reported through its `pages:` frontmatter, i.e. as "this evidence was compiled into page X", so the answer stays at the page level unless the source is still uncompiled backlog.
+
+`--mode keyword` (BM25, the default) is literal: it matches only wording the wiki itself uses, so a question in your own words hits nothing at all — `成本治理` finds the page, the synonymous `控制花销` finds nothing. Rather than leaving that as a dead end, zero keyword hits trigger an automatic semantic retry (local embeddings, `qmd embed` once). Keyword answers in about a second, the retry adds a few. `--mode semantic` and `--mode hybrid` (LLM reranking, slow) are there for when you already know which one you want. The two daily units refresh the index after they touch content, so the search never lags behind the wiki.
+
+The wiki also carries the search with it. `skill/wiki-knowledge-base/wiki-search` is a standalone python3 + qmd executable that ships inside the wiki directory, so an LLM handed nothing but the knowledge repo still gets the same escalation as one command — it locates the wiki relative to itself and re-points the qmd collections on every run, which matters because each fresh clone lands at a new absolute path.
+
+The homepage of the published site has its own search box — a client-side filter over titles, tags, descriptions and page ledes, built as `index.json` at deploy time. No service, no request leaves the page.
+
+## Using the wiki elsewhere
+
+The wiki is plain markdown with YAML frontmatter and `[[wikilinks]]`, so it opens directly in Obsidian, and any LLM agent pointed at the directory can answer questions from it — read the relevant `index/<category>.md` first, then follow links. `skill/wiki-knowledge-base/` packages that retrieval path (including the qmd escalation above) as a portable skill for any LLM handed such a repo. Since it is just files, syncing it elsewhere is a `git push`: keep the wiki directory in a private repo and you can attach the same knowledge base to whatever tool you use, on any machine, without running a server.
 
 Run `subscriber wiki --lint` occasionally. It reports broken wikilinks, pages nothing links to, and how many sources are waiting to be compiled — the failure mode to watch for is pages silently going stale, not the compiler crashing.
 

@@ -4,6 +4,7 @@ Layout under the wiki dir:
   sources/YYYY/MM/*.md  raw archived articles (written by archive.py, immutable)
   pages/*.md            curated knowledge pages, cross-linked with [[wikilinks]]
   index.md              page catalog, rebuilt deterministically from frontmatter
+  index/<category>.md   per-category slice of the same catalog, same rebuild
   log.md                append-only ingest log
 
 The LLM only does two things per source: plan which pages to touch (JSON),
@@ -20,9 +21,12 @@ from pathlib import Path
 import yaml
 
 from .digest import _client
+from .images import IMG_DIR
 
 _FRONT_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
-_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)")
+# `!` in front makes it an image embed, not a page link (see images.IMG_DIR).
+_WIKILINK_RE = re.compile(r"(?<!!)\[\[([^\]|#]+)")
+_IMAGE_EMBED_RE = re.compile(r"!\[\[([^\]|#]+)\]\]")
 # "## 3. 标题" / "### 3.1 标题" — the Hugo theme numbers headings itself
 _HEADING_NUM_RE = re.compile(r"^(#{2,6} )\d+(?:\.\d+)*[.、]?\s+", re.MULTILINE)
 
@@ -54,7 +58,9 @@ def pending_sources(wiki_dir: Path) -> list[Path]:
     for path in sorted((wiki_dir / "sources").rglob("*.md")):
         meta, _ = parse_front(path.read_text())
         if meta.get("compiled") is False:
-            files.append((meta.get("date", ""), path))
+            # YAML gives back a date for `date: 2026-08-26` and a str for the
+            # quoted form; both shapes exist in sources/ and don't compare.
+            files.append((str(meta.get("date", "")), path))
     return [p for _, p in sorted(files)]
 
 
@@ -85,6 +91,31 @@ def category_index(wiki_dir: Path, category: str) -> str:
     return "\n".join(lines) if lines else "(该分类暂无页面)"
 
 
+# 分类切片索引目录：内容与 index.md 的同名小节一致，供检索方只读一个分类，
+# 不必把整库索引塞进上下文。由 rebuild_index 一并重建，空分类的文件会被删除。
+INDEX_DIR = "index"
+
+
+def _rebuild_category_indexes(wiki_dir: Path, entries: list[tuple[str, dict]]) -> None:
+    out_dir = wiki_dir / INDEX_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = set()
+    for cat in CATEGORIES + ["uncategorized"]:
+        group = [(s, m) for s, m in entries if _category_of(m) == cat]
+        if not group:
+            continue
+        tags = sorted({str(t) for _, m in group for t in m.get("tags") or []})
+        lines = [f"# {cat}", ""]
+        lines.append(f"{len(group)} 个页面。本分类标签：" + " ".join(f"`{t}`" for t in tags))
+        lines.append("")
+        lines += [_index_line(s, m) for s, m in group]
+        (out_dir / f"{cat}.md").write_text("\n".join(lines) + "\n")
+        written.add(f"{cat}.md")
+    for stale in out_dir.glob("*.md"):
+        if stale.name not in written:
+            stale.unlink()
+
+
 def rebuild_index(wiki_dir: Path) -> None:
     entries = _page_entries(wiki_dir)
     lines = ["# Index", ""]
@@ -96,6 +127,7 @@ def rebuild_index(wiki_dir: Path) -> None:
         lines += [_index_line(s, m) for s, m in group]
         lines.append("")
     (wiki_dir / "index.md").write_text("\n".join(lines).rstrip("\n") + "\n")
+    _rebuild_category_indexes(wiki_dir, entries)
 
 
 def append_log(wiki_dir: Path, action: str, detail: str) -> None:
@@ -279,6 +311,11 @@ def lint_wiki(wiki_dir: Path) -> list[str]:
     for name in pages:
         if name not in linked:
             issues.append(f"孤儿页(无入链): pages/{name}.md")
+
+    for name, text in pages.items():
+        for image in _IMAGE_EMBED_RE.findall(text):
+            if not (wiki_dir / IMG_DIR / image.strip()).exists():
+                issues.append(f"图片缺失: pages/{name}.md -> {IMG_DIR}/{image.strip()}")
 
     backlog = len(pending_sources(wiki_dir))
     if backlog:

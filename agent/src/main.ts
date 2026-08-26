@@ -15,7 +15,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { parse as parseYaml } from "yaml";
 import { pruneContext } from "./context.ts";
-import { type CompileCtx, makeTools, UV_BIN } from "./tools.ts";
+import { type CompileCtx, IMAGE_BUDGET, makeTools, UV_BIN } from "./tools.ts";
 import { rollbackTouched, verifyTouched } from "./verify.ts";
 import {
 	appendLog,
@@ -25,6 +25,7 @@ import {
 	MAX_PAGE_CHARS,
 	parseFront,
 	pendingSources,
+	splitImageSection,
 } from "./wiki.ts";
 
 const execFileAsync = promisify(execFile);
@@ -48,6 +49,8 @@ interface SourceInput {
 	date: string;
 	summary: string;
 	content: string;
+	/** 末尾的「## 图片」段，绕过正文截断单独传给模型 */
+	images: string;
 }
 
 function readSource(sourcePath: string, maxChars: number): SourceInput {
@@ -59,12 +62,14 @@ function readSource(sourcePath: string, maxChars: number): SourceInput {
 		summary = head.replace("## 摘要", "").trim();
 		content = rest.join("## 原文").trim();
 	}
+	const { text, images } = splitImageSection(content);
 	return {
 		title: String(meta.title ?? path.basename(sourcePath, ".md")),
 		url: String(meta.url ?? ""),
 		date: String(meta.date ?? ""),
 		summary,
-		content: content.slice(0, maxChars),
+		content: text.slice(0, maxChars),
+		images,
 	};
 }
 
@@ -81,6 +86,7 @@ async function compileSource(
 		wikiDir,
 		touched: new Map<string, string>(),
 		edits: 0,
+		savedImages: [],
 		finished: false,
 		summary: "",
 	};
@@ -119,6 +125,7 @@ async function compileSource(
 		`摘要：${src.summary}`,
 		`正文：`,
 		src.content,
+		src.images,
 	].join("\n");
 
 	try {
@@ -161,7 +168,8 @@ async function main(): Promise<void> {
 	const systemPrompt = String(prompts.wiki_agent)
 		.replaceAll("{persona}", String(prompts.persona).trim())
 		.replaceAll("{categories}", CATEGORIES.join(", "))
-		.replaceAll("{max_page_chars}", String(MAX_PAGE_CHARS));
+		.replaceAll("{max_page_chars}", String(MAX_PAGE_CHARS))
+		.replaceAll("{image_budget}", String(IMAGE_BUDGET));
 
 	const pending = pendingSources(wikiDir);
 	let batch = pending.slice(0, limit);
@@ -205,7 +213,7 @@ async function main(): Promise<void> {
 			}
 			console.error(`  完成：${ctx.summary}（${turns} 轮，${tokens} tokens，$${cost.toFixed(4)}）`);
 		} else {
-			rollbackTouched(ctx.wikiDir, ctx.touched);
+			rollbackTouched(ctx.wikiDir, ctx.touched, ctx.savedImages);
 			console.error(
 				`  失败，回滚 ${pages.length} 个页面并保持 pending（${turns} 轮，${tokens} tokens，$${cost.toFixed(4)}）`,
 			);
