@@ -37,12 +37,16 @@ export interface CompileCtx {
 	touched: Map<string, string>;
 	/** 本次成功的 edit_page/write_page 次数；预算在 harness 强制，不指望模型自律。 */
 	edits: number;
+	/** 本次 save_image 存进 imgs/ 的文件名；回滚时删掉，别在 wiki 里留孤儿图。 */
+	savedImages: string[];
 	finished: boolean;
 	summary: string;
 }
 
 /** 每篇源的改动预算：超过说明模型不肯收敛，强制它 finish。 */
 export const EDIT_BUDGET = 10;
+/** 每篇源最多存几张图。一篇文章值得留下的图极少，多了就是在搬运插图。 */
+export const IMAGE_BUDGET = 3;
 
 function spendEdit(ctx: CompileCtx): string {
 	ctx.edits += 1;
@@ -144,7 +148,7 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			recordTouch(ctx, params.file, before);
 			fs.writeFileSync(p, after);
 			const note = spendEdit(ctx);
-			const problems = validatePage(params.file, after);
+			const problems = validatePage(params.file, after, ctx.wikiDir);
 			return text(
 				problems.length ? `已替换，但存在问题：\n${problems.join("\n")}${note}` : `已替换。${note}`,
 			);
@@ -172,7 +176,7 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			if (params.content.length > MAX_PAGE_CHARS && params.content.length > originalBefore.length) {
 				throw new Error(`内容超过 ${MAX_PAGE_CHARS} 字符上限，请精简或拆分`);
 			}
-			const problems = validatePage(params.file, params.content);
+			const problems = validatePage(params.file, params.content, ctx.wikiDir);
 			if (problems.length) throw new Error(`页面校验未通过：\n${problems.join("\n")}`);
 			recordTouch(ctx, params.file, originalBefore);
 			fs.writeFileSync(p, params.content);
@@ -202,6 +206,32 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		},
 	};
 
+	const saveImage: AgentTool<any> = {
+		name: "save_image",
+		label: "Save Image",
+		description:
+			"把源里的一张图存进 wiki/imgs/ 并返回嵌入写法。只在图本身承载信息时才用（架构图、流程图、数据图表、评测结果表），装饰图、头像、封面一律不存",
+		parameters: Type.Object({
+			url: Type.String({ description: "源里 ## 图片 段给出的原图链接" }),
+			name: Type.String({
+				description: "文件名（不带扩展名）：小写英文加连字符，建议 <页面名>-<图说的是什么>",
+			}),
+		}),
+		execute: async (_id, params, signal) => {
+			if (ctx.savedImages.length >= IMAGE_BUDGET) {
+				throw new Error(`本篇存图预算（${IMAGE_BUDGET} 张）已用完，用现有的图或不用图`);
+			}
+			const { stdout } = await execFileAsync(
+				UV_BIN,
+				["run", "python", "scripts/save_image.py", params.url, params.name, ctx.wikiDir],
+				{ cwd: ctx.root, timeout: 60_000, signal },
+			);
+			const file = stdout.trim();
+			if (!ctx.savedImages.includes(file)) ctx.savedImages.push(file);
+			return text(`已存为 ${file}，在页面里用 ![[${file}]] 引用（写在它说明的那段正文旁边）。`);
+		},
+	};
+
 	const finish: AgentTool<any> = {
 		name: "finish",
 		label: "Finish",
@@ -217,5 +247,5 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		},
 	};
 
-	return [listIndex, readPage, editPage, writePage, fetchUrl, finish];
+	return [listIndex, readPage, editPage, writePage, fetchUrl, saveImage, finish];
 }

@@ -136,6 +136,14 @@ wiki_agent: |
     the context in a healthy range;
   - If the article body is thin (just a link or a couple of sentences),
     fetch_url the link and read the full text before judging;
+  - The "## 图片" section at the end of a source lists the article's images as
+    external links. The test is simple: if a paragraph you are about to write
+    would be markedly easier to understand with one of those figures next to it
+    (an architecture diagram, a flow/sequence diagram, a data comparison chart,
+    a benchmark table, an explanatory screenshot), save it into the wiki with
+    save_image. A figure earns its place by showing what the prose cannot.
+    Never save decoration, covers, avatars, QR codes, author cards or plain
+    code screenshots. At most {image_budget} per article; most articles get 0-1;
   - If nothing is worth keeping, touch no pages and finish with the reason.
 
   Page rules:
@@ -149,6 +157,13 @@ wiki_agent: |
   - Wikilinks are [[lowercase-hyphenated-page-names]] pointing only to pages
     in the same category; linking a not-yet-written page is allowed for
     concepts that genuinely deserve one, but be restrained;
+  - Embed images as ![[file-name.png]], placed next to the paragraph they
+    illustrate, with an adjacent sentence saying what the figure shows — a
+    figure must never stand alone. The file name must be the one save_image
+    returned; embedding an image that is not in the wiki is rejected by the
+    verifier, and pasting the original external URL into the body is not an
+    option either, because those links rot — that is the whole reason for
+    saving it;
   - Pages are capped at {max_page_chars} characters. When a page is near or
     over the cap, do not keep stuffing it: split a mature topic out into a
     new page with write_page, then edit_page the original to remove the moved

@@ -2,13 +2,23 @@ import * as assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as http from "node:http";
 import { test } from "node:test";
-import { type CompileCtx, makeTools } from "../src/tools.ts";
+import { type CompileCtx, IMAGE_BUDGET, makeTools } from "../src/tools.ts";
+import { rollbackTouched } from "../src/verify.ts";
 
 function tmpCtx(): CompileCtx {
 	const wikiDir = fs.mkdtempSync(path.join(os.tmpdir(), "tools-"));
 	fs.mkdirSync(path.join(wikiDir, "pages"), { recursive: true });
-	return { root: wikiDir, wikiDir, touched: new Map(), edits: 0, finished: false, summary: "" };
+	return {
+		root: wikiDir,
+		wikiDir,
+		touched: new Map(),
+		edits: 0,
+		savedImages: [],
+		finished: false,
+		summary: "",
+	};
 }
 
 function tool(ctx: CompileCtx, name: string) {
@@ -106,5 +116,93 @@ test("list_index 读分类切片索引，缺失分类返回空提示", async () 
 
 	assert.equal(await run(ctx, "list_index", { category: "llm-systems" }), "(该分类暂无页面)");
 	await assert.rejects(run(ctx, "list_index", { category: "nope" }), /未知分类/);
+	fs.rmSync(ctx.wikiDir, { recursive: true });
+});
+
+/** save_image 走的是 uv -> scripts/save_image.py，这里连真实进程一起验。 */
+test("save_image 存进 wiki/imgs 并返回 ![[...]] 写法", async () => {
+	const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+	const server = http.createServer((_req, res) => {
+		res.writeHead(200, { "content-type": "image/png" });
+		res.end(png);
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const { port } = server.address() as { port: number };
+
+	const ctx = tmpCtx();
+	ctx.root = path.resolve(import.meta.dirname, "..", "..");
+	try {
+		const out = await run(ctx, "save_image", {
+			url: `http://127.0.0.1:${port}/fig.png`,
+			name: "harness-arch",
+		});
+		assert.match(out, /!\[\[harness-arch\.png\]\]/);
+		assert.deepEqual(fs.readFileSync(path.join(ctx.wikiDir, "imgs", "harness-arch.png")), png);
+	} finally {
+		server.close();
+		fs.rmSync(ctx.wikiDir, { recursive: true });
+	}
+});
+
+test("save_image 拒绝非图片响应", async () => {
+	const server = http.createServer((_req, res) => {
+		res.writeHead(200, { "content-type": "text/html" });
+		res.end("<html>404</html>");
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const { port } = server.address() as { port: number };
+
+	const ctx = tmpCtx();
+	ctx.root = path.resolve(import.meta.dirname, "..", "..");
+	try {
+		await assert.rejects(
+			run(ctx, "save_image", { url: `http://127.0.0.1:${port}/x`, name: "nope" }),
+			/不是图片/,
+		);
+		assert.ok(!fs.existsSync(path.join(ctx.wikiDir, "imgs")));
+	} finally {
+		server.close();
+		fs.rmSync(ctx.wikiDir, { recursive: true });
+	}
+});
+
+test("save_image 有硬预算，超了就拒绝", async () => {
+	const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+	const server = http.createServer((_req, res) => {
+		res.writeHead(200, { "content-type": "image/png" });
+		res.end(png);
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const { port } = server.address() as { port: number };
+
+	const ctx = tmpCtx();
+	ctx.root = path.resolve(import.meta.dirname, "..", "..");
+	try {
+		for (let i = 0; i < IMAGE_BUDGET; i++) {
+			await run(ctx, "save_image", { url: `http://127.0.0.1:${port}/${i}.png`, name: `fig-${i}` });
+		}
+		await assert.rejects(
+			run(ctx, "save_image", { url: `http://127.0.0.1:${port}/x.png`, name: "fig-x" }),
+			/预算/,
+		);
+		assert.equal(fs.readdirSync(path.join(ctx.wikiDir, "imgs")).length, IMAGE_BUDGET);
+	} finally {
+		server.close();
+		fs.rmSync(ctx.wikiDir, { recursive: true });
+	}
+});
+
+test("回滚删掉本次存下的图，不在 wiki 里留孤儿文件", async () => {
+	const ctx = tmpCtx();
+	fs.mkdirSync(path.join(ctx.wikiDir, "imgs"), { recursive: true });
+	const kept = path.join(ctx.wikiDir, "imgs", "old.png");
+	const fresh = path.join(ctx.wikiDir, "imgs", "new.png");
+	fs.writeFileSync(kept, "早就存在");
+	fs.writeFileSync(fresh, "本次新存");
+	ctx.savedImages.push("new.png");
+
+	rollbackTouched(ctx.wikiDir, ctx.touched, ctx.savedImages);
+	assert.ok(fs.existsSync(kept));
+	assert.ok(!fs.existsSync(fresh));
 	fs.rmSync(ctx.wikiDir, { recursive: true });
 });

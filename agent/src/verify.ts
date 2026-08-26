@@ -6,7 +6,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { MAX_PAGE_CHARS, validatePage } from "./wiki.ts";
+import { IMG_DIR, MAX_PAGE_CHARS, validatePage } from "./wiki.ts";
 
 export function verifyTouched(wikiDir: string, touched: Map<string, string>): string[] {
 	const problems: string[] = [];
@@ -14,7 +14,7 @@ export function verifyTouched(wikiDir: string, touched: Map<string, string>): st
 		const p = path.join(wikiDir, "pages", file);
 		if (!fs.existsSync(p)) continue;
 		const content = fs.readFileSync(p, "utf-8");
-		problems.push(...validatePage(file, content));
+		problems.push(...validatePage(file, content, wikiDir));
 		if (content.length > MAX_PAGE_CHARS && content.length > original.length) {
 			problems.push(`${file}: 页面 ${content.length} 字符，超过 ${MAX_PAGE_CHARS} 上限且仍在膨胀，请拆分`);
 		}
@@ -22,7 +22,15 @@ export function verifyTouched(wikiDir: string, touched: Map<string, string>): st
 	return problems;
 }
 
-export function rollbackTouched(wikiDir: string, touched: Map<string, string>): void {
+export function rollbackTouched(
+	wikiDir: string,
+	touched: Map<string, string>,
+	savedImages: string[] = [],
+): void {
+	for (const file of savedImages) {
+		const p = path.join(wikiDir, IMG_DIR, file);
+		if (fs.existsSync(p)) fs.rmSync(p);
+	}
 	for (const [file, original] of touched) {
 		const p = path.join(wikiDir, "pages", file);
 		if (original === "") {

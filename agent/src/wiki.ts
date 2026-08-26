@@ -104,12 +104,30 @@ export function appendLog(wikiDir: string, action: string, detail: string): void
 	fs.appendFileSync(path.join(wikiDir, "log.md"), `## [${today}] ${action} | ${detail}\n`);
 }
 
+/** 与 src/subscriber/images.py 的 IMG_DIR 保持一致。 */
+export const IMG_DIR = "imgs";
 export const FILE_NAME_RE = /^[a-z0-9][a-z0-9-]*\.md$/;
-const WIKILINK_RE = /\[\[([^\]|]+)\]\]/g;
+const WIKILINK_RE = /(!?)\[\[([^\]|]+)\]\]/g;
 const TAG_RE = /^[a-z0-9][a-z0-9-]*$/;
+/** 图片嵌入 ![[name.ext]]：文件必须真的躺在 wiki/imgs/ 里（见 save_image）。 */
+export const IMAGE_EMBED_RE = /^[a-z0-9][a-z0-9-]*\.(png|jpg|webp|gif)$/;
+
+/** 归档源里的图片段标题，与 fetch.image_section 一致。 */
+export const IMAGE_SECTION = "## 图片";
+
+/**
+ * 把源正文和它末尾的图片段拆开。
+ * 正文会按 max_chars 截断，而图片段正好在末尾——不先摘出来，模型就永远看不到
+ * 原图链接（实测：12k 字符的源截到 6k，图片段整段消失）。
+ */
+export function splitImageSection(content: string): { text: string; images: string } {
+	const at = content.lastIndexOf(`\n${IMAGE_SECTION}`);
+	if (at < 0) return { text: content.trim(), images: "" };
+	return { text: content.slice(0, at).trim(), images: content.slice(at + 1).trim() };
+}
 
 /** 页面内容的确定性检查，返回违规描述（空数组 = 通过）。 */
-export function validatePage(file: string, content: string): string[] {
+export function validatePage(file: string, content: string, wikiDir: string): string[] {
 	const problems: string[] = [];
 	if (!FILE_NAME_RE.test(file)) {
 		problems.push(`${file}: 文件名必须是小写英文加连字符的 .md`);
@@ -133,7 +151,15 @@ export function validatePage(file: string, content: string): string[] {
 		problems.push(`${file}: 正文为空`);
 	}
 	for (const m of body.matchAll(WIKILINK_RE)) {
-		const target = m[1];
+		const target = m[2];
+		if (m[1] === "!") {
+			if (!IMAGE_EMBED_RE.test(target)) {
+				problems.push(`${file}: 图片 ![[${target}]] 必须是小写英文连字符加 png/jpg/webp/gif`);
+			} else if (!fs.existsSync(path.join(wikiDir, IMG_DIR, target))) {
+				problems.push(`${file}: 图片 ![[${target}]] 不在 ${IMG_DIR}/ 里，先用 save_image 存下来`);
+			}
+			continue;
+		}
 		if (target.startsWith("#")) continue; // Obsidian 页内锚点链接
 		if (!/^[a-z0-9][a-z0-9-]*$/.test(target)) {
 			problems.push(`${file}: wikilink [[${target}]] 必须是小写英文连字符的页面名`);
