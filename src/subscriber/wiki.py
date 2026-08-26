@@ -21,9 +21,12 @@ from pathlib import Path
 import yaml
 
 from .digest import _client
+from .images import IMG_DIR
 
 _FRONT_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
-_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)")
+# `!` in front makes it an image embed, not a page link (see images.IMG_DIR).
+_WIKILINK_RE = re.compile(r"(?<!!)\[\[([^\]|#]+)")
+_IMAGE_EMBED_RE = re.compile(r"!\[\[([^\]|#]+)\]\]")
 # "## 3. 标题" / "### 3.1 标题" — the Hugo theme numbers headings itself
 _HEADING_NUM_RE = re.compile(r"^(#{2,6} )\d+(?:\.\d+)*[.、]?\s+", re.MULTILINE)
 
@@ -308,6 +311,11 @@ def lint_wiki(wiki_dir: Path) -> list[str]:
     for name in pages:
         if name not in linked:
             issues.append(f"孤儿页(无入链): pages/{name}.md")
+
+    for name, text in pages.items():
+        for image in _IMAGE_EMBED_RE.findall(text):
+            if not (wiki_dir / IMG_DIR / image.strip()).exists():
+                issues.append(f"图片缺失: pages/{name}.md -> {IMG_DIR}/{image.strip()}")
 
     backlog = len(pending_sources(wiki_dir))
     if backlog:

@@ -364,3 +364,19 @@ class TestFixWikilinks:
         prompt = mock_chat.call_args.args[1]
         # 22 个链接 * 10% = 2 次保留配额
         assert prompt.endswith("|22|2|2")
+
+
+class TestImageEmbedsInLint:
+    def test_image_embed_is_not_a_broken_wikilink(self, tmp_path):
+        """![[x.png]] is a figure in wiki/imgs, not a page that failed to
+        exist; the lint must not report it, nor --fix rewrite it."""
+        _write_page(tmp_path, "a", body="正文\n\n![[harness-arch.png]]\n")
+        (tmp_path / "imgs").mkdir()
+        (tmp_path / "imgs" / "harness-arch.png").write_bytes(b"x")
+        issues = lint_wiki(tmp_path)
+        assert not any("harness-arch" in i for i in issues)
+
+    def test_missing_image_reported(self, tmp_path):
+        _write_page(tmp_path, "a", body="正文\n\n![[gone.png]]\n")
+        issues = lint_wiki(tmp_path)
+        assert any("gone.png" in i and "imgs" in i for i in issues)
