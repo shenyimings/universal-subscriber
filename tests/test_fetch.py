@@ -5,8 +5,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from subscriber.fetch import (
+    MAX_IMAGES,
     Update,
     _pick_link,
+    extract_images,
     fetch_and_extract,
     fetch_rss,
     fetch_page,
@@ -88,7 +90,7 @@ class TestFetchRss:
         source = {"name": "test", "type": "rss", "url": "https://example.com/feed"}
         updates = fetch_rss(source, state, max_items=1)
         assert updates[0].content == "full article text"
-        mock_extract.assert_called_once_with("https://example.com/a")
+        mock_extract.assert_called_once_with("https://example.com/a", with_images=True)
 
 
 class TestFetchPage:
@@ -98,6 +100,8 @@ class TestFetchPage:
         updates = fetch_page(source, state)
         assert updates == []
         assert state.get_snapshot("pg") == "page content v1"
+        # snapshots are diffed; rotating image URLs would look like a change
+        mock_extract.assert_called_once_with("https://example.com")
 
     @patch("subscriber.fetch.fetch_and_extract")
     def test_no_change(self, mock_extract, state):
@@ -123,6 +127,91 @@ class TestFetchPage:
         source = {"name": "pg", "type": "page", "url": "https://example.com"}
         with pytest.raises(RuntimeError, match="正文提取为空"):
             fetch_page(source, state)
+
+
+IMG_PAGE = """<html><body>
+<header><img src="/static/logo.svg" alt="站标"></header>
+<img class="logo__img" src="/img/tob.png" alt="Trail of Bits Logo">
+<article>
+  <p>正文第一段，足够长以便被抽取器认定为正文，讲的是 harness 的实现方式与细节。</p>
+  <figure>
+    <img src="/media/fig1.png" alt="架构图">
+    <figcaption>图1 架构</figcaption>
+  </figure>
+  <p>正文第二段，同样足够长，继续讲解解释器的求值流程与工具调用的处理办法。</p>
+  <img data-src="https://cdn.example.com/fig2.jpg" src="data:image/gif;base64,R0lGOD" alt="流程">
+  <img src="/media/fig1.png" alt="重复的架构图">
+  <img src="/i/avatar-2026.png" alt="作者头像">
+  <img src="/px.gif" width="1" height="1">
+</article></body></html>"""
+
+
+class TestExtractImages:
+    def test_absolutized_against_the_page(self):
+        urls = [u for u, _ in extract_images(IMG_PAGE, "https://example.com/post/a")]
+        assert "https://example.com/media/fig1.png" in urls
+
+    def test_alt_text_kept(self):
+        assert dict(extract_images(IMG_PAGE, "https://example.com/a"))[
+            "https://example.com/media/fig1.png"
+        ] == "架构图"
+
+    def test_lazy_data_src_wins_over_placeholder(self):
+        """知乎/公众号 put a data: placeholder in src and the real image in
+        data-src; taking src would archive a 1px gif."""
+        urls = [u for u, _ in extract_images(IMG_PAGE, "https://example.com/a")]
+        assert "https://cdn.example.com/fig2.jpg" in urls
+        assert not any(u.startswith("data:") for u in urls)
+
+    def test_chrome_dropped(self):
+        """svg logos, avatars and tracking pixels are never article content."""
+        urls = [u for u, _ in extract_images(IMG_PAGE, "https://example.com/a")]
+        assert not any("logo" in u or "avatar" in u or "px.gif" in u for u in urls)
+
+    def test_chrome_named_only_in_alt_or_class_dropped(self):
+        """Trail of Bits serves its site logo from /img/tob.png — the URL is
+        innocent, the alt and the class are not."""
+        urls = [u for u, _ in extract_images(IMG_PAGE, "https://example.com/a")]
+        assert "https://example.com/img/tob.png" not in urls
+
+    def test_deduped_keeping_first_alt(self):
+        pairs = extract_images(IMG_PAGE, "https://example.com/a")
+        fig1 = [p for p in pairs if p[0].endswith("fig1.png")]
+        assert len(fig1) == 1 and fig1[0][1] == "架构图"
+
+    def test_capped(self):
+        many = "<article>" + "".join(
+            f'<img src="https://cdn.example.com/{i}.png">' for i in range(MAX_IMAGES + 10)
+        ) + "</article>"
+        assert len(extract_images(many, "https://example.com/a")) == MAX_IMAGES
+
+    def test_no_images(self):
+        assert extract_images("<p>只有文字</p>", "https://example.com/a") == []
+
+
+class TestFetchAndExtractImages:
+    @patch("subscriber.fetch.extract_text", return_value="正文")
+    @patch("subscriber.fetch.requests.get")
+    def test_image_section_appended(self, mock_get, mock_extract):
+        mock_get.return_value = _stream_response("text/html", IMG_PAGE.encode())
+        out = fetch_and_extract("https://example.com/a", with_images=True)
+        assert out.startswith("正文")
+        assert "## 图片" in out
+        assert "![架构图](https://example.com/media/fig1.png)" in out
+
+    @patch("subscriber.fetch.extract_text", return_value="正文")
+    @patch("subscriber.fetch.requests.get")
+    def test_images_off_by_default(self, mock_get, mock_extract):
+        """page sources diff their snapshots; rotating image URLs would show
+        up as spurious changes every run."""
+        mock_get.return_value = _stream_response("text/html", IMG_PAGE.encode())
+        assert fetch_and_extract("https://example.com/a") == "正文"
+
+    @patch("subscriber.fetch.extract_text", return_value="正文")
+    @patch("subscriber.fetch.requests.get")
+    def test_no_section_when_page_has_no_images(self, mock_get, mock_extract):
+        mock_get.return_value = _stream_response("text/html", "<p>只有文字</p>".encode())
+        assert fetch_and_extract("https://example.com/a", with_images=True) == "正文"
 
 
 class TestPickLink:
@@ -220,6 +309,7 @@ class TestFetchInbox:
         updates = fetch_inbox(source, state, max_items=5)
         assert updates[0].link == "https://example.com/article"
         assert updates[0].content == "extracted article"
+        mock_extract.assert_called_once_with("https://example.com/article", with_images=True)
 
     @patch.dict("os.environ", {"AGENTMAIL_API_KEY": "fake"})
     @patch("subscriber.fetch.fetch_and_extract", return_value="extracted article")
