@@ -6,6 +6,14 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
+import {
+	formatOutline,
+	getSection,
+	insertSection as spliceSection,
+	isReserved,
+	replaceSection,
+	splitSections,
+} from "./sections.ts";
 import { CATEGORIES, FILE_NAME_RE, MAX_PAGE_CHARS, validatePage } from "./wiki.ts";
 
 const execFileAsync = promisify(execFile);
@@ -17,22 +25,17 @@ export const UV_BIN = (() => {
 })();
 
 const FETCH_URL_MAX_CHARS = 8_000;
-/** read_page 单次返回的上限：大页面按切片迭代读取，控制每轮进入上下文的量。 */
+/** 超过这个大小的页面不整页返回，只给章节大纲，让模型按节取用。 */
 const READ_PAGE_MAX_CHARS = 16_000;
-
-/** 大页面的章节大纲：标题行 + 字符位置，供模型跳读相关切片。 */
-function pageOutline(content: string): string {
-	const lines: string[] = [];
-	const re = /^#{1,3} .*$/gm;
-	for (const m of content.matchAll(re)) {
-		lines.push(`${m[0]} @${m.index}`);
-	}
-	return lines.join("\n") || "（无标题结构）";
-}
+/** grep_pages 单次最多返回几行命中：去重判断看的是有没有，不是全部。 */
+const GREP_MAX_HITS = 40;
+const GREP_SNIPPET_CHARS = 160;
 
 export interface CompileCtx {
 	root: string; // subscriber 仓库根目录
 	wikiDir: string;
+	/** config.yaml 路径，search_wiki 转交给 subscriber search */
+	configPath: string;
 	/** 本次被写过的页面 -> 首次触碰前的原始内容（新页面为 ""）。用于回滚。 */
 	touched: Map<string, string>;
 	/** 本次成功的 edit_page/write_page 次数；预算在 harness 强制，不指望模型自律。 */
@@ -73,6 +76,30 @@ function recordTouch(ctx: CompileCtx, file: string, originalBefore: string): voi
 	if (!ctx.touched.has(file)) ctx.touched.set(file, originalBefore);
 }
 
+function readPageFile(ctx: CompileCtx, file: string): string {
+	const p = pagePath(ctx, file);
+	if (!fs.existsSync(p)) throw new Error(`页面不存在：${file}`);
+	return fs.readFileSync(p, "utf-8");
+}
+
+/**
+ * 写盘的唯一入口：棘轮检查（超限页只许瘦身）、记录回滚点、落盘、跑页面校验。
+ * 所有写入类工具都走这里，别在工具里各写一遍。
+ */
+function commitPage(ctx: CompileCtx, file: string, before: string, after: string, done: string) {
+	if (before.length > MAX_PAGE_CHARS && after.length > before.length) {
+		throw new Error(
+			`${file} 已超过 ${MAX_PAGE_CHARS} 字符上限，不能再增长；` +
+				"请把新内容放进拆分出的新页面（write_page），或先删减/迁出旧内容再合并",
+		);
+	}
+	recordTouch(ctx, file, before);
+	fs.writeFileSync(pagePath(ctx, file), after);
+	const note = spendEdit(ctx);
+	const problems = validatePage(file, after, ctx.wikiDir);
+	return text(problems.length ? `${done}，但存在问题：\n${problems.join("\n")}${note}` : `${done}。${note}`);
+}
+
 function text(s: string) {
 	return { content: [{ type: "text" as const, text: s }] };
 }
@@ -96,27 +123,36 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		},
 	};
 
+	const outlinePage: AgentTool<any> = {
+		name: "outline_page",
+		label: "Outline page",
+		description:
+			"列出一个页面的章节地图：每节的序号、标题、字符数、首句。极便宜，选目标页面时先对候选页各拉一遍，再决定读哪一节",
+		parameters: Type.Object({
+			file: Type.String({ description: "页面文件名，如 llm-agent-harness.md" }),
+		}),
+		execute: async (_id, params) => text(formatOutline(readPageFile(ctx, params.file))),
+	};
+
 	const readPage: AgentTool<any> = {
 		name: "read_page",
 		label: "Read page",
 		description:
-			"读取一个 wiki 页面。超过读取上限的大页面按切片返回：首次调用（不带 offset）返回章节大纲（含字符位置）和开头切片，之后按大纲用 offset 只读需要的部分，不要顺序读完整页",
+			"读取页面。带 section 时只返回该序号的那一节（序号来自 outline_page）；不带 section 时小页面整页返回，大页面只返回章节大纲——不要试图整页读完，按节取用",
 		parameters: Type.Object({
 			file: Type.String({ description: "页面文件名，如 llm-agent-harness.md" }),
-			offset: Type.Optional(Type.Number({ description: "起始字符位置（大页面续读/跳读用）" })),
+			section: Type.Optional(Type.Number({ description: "章节序号（来自 outline_page）" })),
 		}),
 		execute: async (_id, params) => {
-			const p = pagePath(ctx, params.file);
-			if (!fs.existsSync(p)) throw new Error(`页面不存在：${params.file}`);
-			const content = fs.readFileSync(p, "utf-8");
-			if (content.length <= READ_PAGE_MAX_CHARS && !params.offset) return text(content);
-			const offset = Math.max(0, Math.min(params.offset ?? 0, content.length));
-			const end = Math.min(offset + READ_PAGE_MAX_CHARS, content.length);
-			const head = `（页面共 ${content.length} 字符，本次返回第 ${offset}–${end} 字符${
-				end < content.length ? `，续读用 offset=${end}` : "，已到末尾"
-			}）`;
-			const outline = offset === 0 ? `\n章节定位（标题 @字符位置）：\n${pageOutline(content)}\n` : "";
-			return text(`${head}${outline}\n${content.slice(offset, end)}`);
+			const content = readPageFile(ctx, params.file);
+			if (params.section !== undefined) {
+				const s = getSection(content, params.section);
+				return text(`（第 ${s.index} 节，共 ${s.text.length} 字符）\n${s.text}`);
+			}
+			if (content.length <= READ_PAGE_MAX_CHARS) return text(content);
+			return text(
+				`${formatOutline(content)}\n\n（页面较大，未整页返回。用 read_page 带 section 序号读需要的那几节，用 edit_section 就地改写）`,
+			);
 		},
 	};
 
@@ -124,7 +160,7 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		name: "edit_page",
 		label: "Edit page",
 		description:
-			"对已有页面做精确字符串替换（old_string 必须在页面中唯一出现）。更新大页面时用它做增量修改，不要整页重写",
+			"对已有页面做精确字符串替换（old_string 必须唯一）。只用于改 frontmatter 或某句话这类小修补；整节的合并改写用 edit_section",
 		parameters: Type.Object({
 			file: Type.String({ description: "页面文件名" }),
 			old_string: Type.String({ description: "被替换的原文，必须唯一" }),
@@ -132,26 +168,61 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		}),
 		execute: async (_id, params) => {
 			checkEditBudget(ctx);
-			const p = pagePath(ctx, params.file);
-			if (!fs.existsSync(p)) throw new Error(`页面不存在：${params.file}`);
-			const before = fs.readFileSync(p, "utf-8");
+			const before = readPageFile(ctx, params.file);
 			const count = before.split(params.old_string).length - 1;
 			if (count === 0) throw new Error("old_string 在页面中不存在，请先 read_page 核对原文");
 			if (count > 1) throw new Error(`old_string 出现 ${count} 次，请扩大上下文使其唯一`);
 			const after = before.replace(params.old_string, params.new_string);
-			if (before.length > MAX_PAGE_CHARS && after.length > before.length) {
-				throw new Error(
-					`${params.file} 已超过 ${MAX_PAGE_CHARS} 字符上限，不能再增长；` +
-						"请把新内容放进拆分出的新页面（write_page），或先用 edit_page 删减/迁出旧内容再合并",
-				);
+			return commitPage(ctx, params.file, before, after, "已替换");
+		},
+	};
+
+	const editSection: AgentTool<any> = {
+		name: "edit_section",
+		label: "Edit section",
+		description:
+			"按章节序号整节改写（序号来自 outline_page）。合并新知识的默认写法：先 read_page 读那一节，再把改好的整节内容写回。不需要 old_string 锚点，定位成本与页面大小无关",
+		parameters: Type.Object({
+			file: Type.String({ description: "页面文件名" }),
+			section: Type.Number({ description: "章节序号（来自 outline_page）" }),
+			content: Type.String({ description: "该节的新全文，含 `## 标题` 行" }),
+		}),
+		execute: async (_id, params) => {
+			checkEditBudget(ctx);
+			const before = readPageFile(ctx, params.file);
+			const target = getSection(before, params.section);
+			if (isReserved(target.title)) {
+				throw new Error(`第 ${params.section} 节「${target.title}」是代码维护的保留段，不要写入`);
 			}
-			recordTouch(ctx, params.file, before);
-			fs.writeFileSync(p, after);
-			const note = spendEdit(ctx);
-			const problems = validatePage(params.file, after, ctx.wikiDir);
-			return text(
-				problems.length ? `已替换，但存在问题：\n${problems.join("\n")}${note}` : `已替换。${note}`,
-			);
+			const firstLine = params.content.trim().split("\n")[0] ?? "";
+			if (isReserved(firstLine)) {
+				throw new Error(`不能把第 ${params.section} 节改成保留段「${firstLine}」`);
+			}
+			const after = replaceSection(before, params.section, params.content);
+			return commitPage(ctx, params.file, before, after, `已更新第 ${params.section} 节`);
+		},
+	};
+
+	const insertSection: AgentTool<any> = {
+		name: "insert_section",
+		label: "Insert section",
+		description:
+			"在指定章节之后插入一个新的二级小节。新知识不属于任何现有章节时用它，别再往页尾堆——页尾是代码维护的「## 来源」段",
+		parameters: Type.Object({
+			file: Type.String({ description: "页面文件名" }),
+			after: Type.Number({ description: "插到第几节之后（序号来自 outline_page）" }),
+			title: Type.String({ description: "新小节标题，不带 ## " }),
+			content: Type.String({ description: "新小节正文，不含标题行" }),
+		}),
+		execute: async (_id, params) => {
+			checkEditBudget(ctx);
+			if (isReserved(`## ${params.title.trim()}`)) {
+				throw new Error(`「${params.title}」是代码维护的保留段，不能新建`);
+			}
+			const before = readPageFile(ctx, params.file);
+			const { content: after, at } = spliceSection(before, params.after, params.title, params.content);
+			const note = at === params.after ? "" : `（落点已调整到第 ${at} 节之后，保留段必须留在页尾）`;
+			return commitPage(ctx, params.file, before, after, `已插入「${params.title}」${note}`);
 		},
 	};
 
@@ -159,7 +230,7 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		name: "write_page",
 		label: "Write page",
 		description:
-			"新建页面，或整页重写小页面。内容必须含 frontmatter（description、category、tags）。超过大小上限的已有页面会被拒绝，只能 edit_page 瘦身或拆分",
+			"新建页面。内容必须含 frontmatter（description、category、tags）。已有页面禁止整页覆盖，只能用 edit_section / edit_page 增量修改",
 		parameters: Type.Object({
 			file: Type.String({ description: "页面文件名，小写英文加连字符" }),
 			content: Type.String({ description: "页面完整内容" }),
@@ -167,13 +238,16 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		execute: async (_id, params) => {
 			checkEditBudget(ctx);
 			const p = pagePath(ctx, params.file);
-			const originalBefore = fs.existsSync(p) ? fs.readFileSync(p, "utf-8") : "";
-			if (originalBefore.length > MAX_PAGE_CHARS) {
+			const exists = fs.existsSync(p);
+			// 本次新建的页面（touched 里原始内容为 ""）允许重写，历史页面一律不许：
+			// 模型重新生成全文时对没读到的部分没有保留义务，这是整页被洗掉的根因。
+			if (exists && ctx.touched.get(params.file) !== "") {
 				throw new Error(
-					`${params.file} 已超过 ${MAX_PAGE_CHARS} 字符上限，禁止整页重写；请用 edit_page 增量修改，或拆分出新页面`,
+					`${params.file} 已存在，禁止整页覆盖；请用 outline_page 看结构，再用 edit_section 改写相关章节或 insert_section 新增一节`,
 				);
 			}
-			if (params.content.length > MAX_PAGE_CHARS && params.content.length > originalBefore.length) {
+			const originalBefore = exists ? fs.readFileSync(p, "utf-8") : "";
+			if (params.content.length > MAX_PAGE_CHARS) {
 				throw new Error(`内容超过 ${MAX_PAGE_CHARS} 字符上限，请精简或拆分`);
 			}
 			const problems = validatePage(params.file, params.content, ctx.wikiDir);
@@ -181,7 +255,62 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 			recordTouch(ctx, params.file, originalBefore);
 			fs.writeFileSync(p, params.content);
 			const note = spendEdit(ctx);
-			return text(`${originalBefore ? "已重写。" : "已创建。"}${note}`);
+			return text(`${exists ? "已重写。" : "已创建。"}${note}`);
+		},
+	};
+
+	const grepPages: AgentTool<any> = {
+		name: "grep_pages",
+		label: "Grep pages",
+		description:
+			"在所有页面正文里做字面全文匹配，返回命中的页面、行号与片段。合并前先用它查这件事是不是已经写过了——索引里的一句简介看不出正文写了什么",
+		parameters: Type.Object({
+			pattern: Type.String({ description: "字面匹配串（不是正则），如 推测解码" }),
+		}),
+		execute: async (_id, params) => {
+			const needle = params.pattern.trim().toLowerCase();
+			if (!needle) throw new Error("pattern 不能为空");
+			const dir = path.join(ctx.wikiDir, "pages");
+			const hits: string[] = [];
+			for (const file of fs.readdirSync(dir).sort()) {
+				if (!file.endsWith(".md")) continue;
+				const lines = fs.readFileSync(path.join(dir, file), "utf-8").split("\n");
+				for (const [i, line] of lines.entries()) {
+					if (!line.toLowerCase().includes(needle)) continue;
+					const snippet = line.trim().slice(0, GREP_SNIPPET_CHARS);
+					hits.push(`${file} 第 ${i + 1} 行: ${snippet}`);
+					if (hits.length >= GREP_MAX_HITS) break;
+				}
+				if (hits.length >= GREP_MAX_HITS) break;
+			}
+			if (!hits.length) return text(`「${params.pattern}」在现有页面里无命中（字面匹配）。`);
+			const more = hits.length >= GREP_MAX_HITS ? `\n（命中过多，只显示前 ${GREP_MAX_HITS} 行）` : "";
+			return text(
+				`「${params.pattern}」命中 ${hits.length} 行（行号不是章节序号；要改写请先 outline_page 取序号）：\n${hits.join("\n")}${more}`,
+			);
+		},
+	};
+
+	const searchWiki: AgentTool<any> = {
+		name: "search_wiki",
+		label: "Search wiki",
+		description:
+			"在 wiki 里按 pages -> sources 分层检索（BM25，弱命中时自动退语义）。用于找不到确切字面时定位相关页面；确认某个说法是否已写过，用 grep_pages 更准",
+		parameters: Type.Object({
+			query: Type.String({ description: "检索词" }),
+		}),
+		execute: async (_id, params, signal) => {
+			try {
+				const { stdout } = await execFileAsync(
+					UV_BIN,
+					["run", "subscriber", "search", params.query, "--config", ctx.configPath],
+					{ cwd: ctx.root, timeout: 120_000, maxBuffer: 4 * 1024 * 1024, signal },
+				);
+				return text(stdout.trim() || "(无命中)");
+			} catch (e) {
+				// qmd 索引可能没建好；检索失败不该让整篇编译停摆，退回 grep_pages 即可
+				return text(`检索不可用（${e instanceof Error ? e.message.split("\n")[0] : e}），请改用 grep_pages。`);
+			}
 		},
 	};
 
@@ -247,5 +376,18 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 		},
 	};
 
-	return [listIndex, readPage, editPage, writePage, fetchUrl, saveImage, finish];
+	return [
+		listIndex,
+		grepPages,
+		searchWiki,
+		outlinePage,
+		readPage,
+		editSection,
+		insertSection,
+		editPage,
+		writePage,
+		fetchUrl,
+		saveImage,
+		finish,
+	];
 }

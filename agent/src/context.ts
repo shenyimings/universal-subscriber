@@ -9,7 +9,14 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 /** 上下文字符预算；超出时裁剪旧的大块工具结果。 */
 export const CONTEXT_BUDGET_CHARS = 120_000;
 
-const PRUNABLE_TOOLS = new Set(["read_page", "fetch_url", "list_index"]);
+const PRUNABLE_TOOLS = new Set([
+	"read_page",
+	"outline_page",
+	"grep_pages",
+	"search_wiki",
+	"fetch_url",
+	"list_index",
+]);
 const PRUNED_NOTE = "（该工具结果已因上下文裁剪移除；如仍需要，请重新调用该工具）";
 
 function messageChars(m: AgentMessage): number {

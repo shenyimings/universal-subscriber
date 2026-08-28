@@ -54,3 +54,33 @@ test("rollbackTouched 恢复改动、删除新建页", () => {
 	assert.equal(fs.existsSync(path.join(pages, "created.md")), false);
 	fs.rmSync(dir, { recursive: true });
 });
+
+test("verifyTouched 抓住整页被洗掉：触碰页面的总字符数不得显著下降", () => {
+	const { dir, pages } = tmpWiki();
+	const original = GOOD + "正文".repeat(5000);
+	fs.writeFileSync(path.join(pages, "hub.md"), GOOD + "剩一点");
+	const problems = verifyTouched(dir, new Map([["hub.md", original]]));
+	assert.ok(problems.some((p) => /字符/.test(p) && /下降|守恒/.test(p)), problems.join("\n"));
+});
+
+test("verifyTouched 允许拆分：内容迁到新页面、总量不降就放行", () => {
+	const { dir, pages } = tmpWiki();
+	const original = GOOD + "正文".repeat(5000);
+	fs.writeFileSync(path.join(pages, "hub.md"), GOOD + "正文".repeat(2000) + "\n[[spun-off]]");
+	fs.writeFileSync(path.join(pages, "spun-off.md"), GOOD + "正文".repeat(3000));
+	const problems = verifyTouched(
+		dir,
+		new Map([
+			["hub.md", original],
+			["spun-off.md", ""],
+		]),
+	);
+	assert.deepEqual(problems, []);
+});
+
+test("verifyTouched 允许小幅精简（5% 以内）", () => {
+	const { dir, pages } = tmpWiki();
+	const original = GOOD + "正文".repeat(5000);
+	fs.writeFileSync(path.join(pages, "hub.md"), GOOD + "正文".repeat(4800));
+	assert.deepEqual(verifyTouched(dir, new Map([["hub.md", original]])), []);
+});
