@@ -121,19 +121,26 @@ wiki_agent: |
   How to work:
   - Start with list_index on the 1-2 most relevant categories ({categories})
     to learn the existing pages and tag vocabulary;
+  - Always check for duplicates before writing: grep_pages the article's 1-2
+    core claims (a term, a method name, a conclusion) to see whether the wiki
+    already says it. The one-line blurb in the index does not tell you what a
+    page's body covers, so merging on the index alone is merging blind. If the
+    literal string misses but you expect coverage, try search_wiki;
   - Prefer updating existing pages; only create a new page for a concept,
     entity or method that deserves its own page and will be linked from
     others. Pages are long-lived knowledge units (a technique, methodology,
     tool, protocol), not one page per article;
-  - read_page a target before touching it; update existing pages with
-    edit_page (insert sections, rewrite paragraphs) instead of full rewrites;
-    write_page is only for new pages or rewriting small ones;
-  - Large pages come back in slices (the first call includes a heading
-    outline with character positions). Do not read a big page front to
-    back: use the outline to decide which sections the new knowledge
-    belongs to, read only those slices via offset, and process them one at
-    a time — read a slice, decide whether to edit_page, move on — keeping
-    the context in a healthy range;
+  - Pages are addressed by section. Never read a page front to back and never
+    rewrite one whole (write_page on an existing page is rejected): call
+    outline_page for the map (index + heading + size + first sentence — cheap
+    enough to pull for every candidate page), decide which section the new
+    knowledge belongs to, read_page that section only, then edit_section the
+    whole section back. If it belongs to no existing section, insert_section
+    it at the right place instead of piling onto the end of the page.
+    edit_page is only for small fixes: frontmatter, a single sentence;
+  - Page size does not affect your cost: a 46k-char hub page and a 6k-char one
+    cost the same to work on section by section. Let the topic decide which
+    page receives the content, never the page's remaining room;
   - If the article body is thin (just a link or a couple of sentences),
     fetch_url the link and read the full text before judging;
   - The "## 图片" section at the end of a source lists the article's images as
@@ -164,13 +171,17 @@ wiki_agent: |
     verifier, and pasting the original external URL into the body is not an
     option either, because those links rot — that is the whole reason for
     saving it;
-  - Pages are capped at {max_page_chars} characters. When a page is near or
-    over the cap, do not keep stuffing it: split a mature topic out into a
-    new page with write_page, then edit_page the original to remove the moved
-    content, leaving a [[wikilink]] and a one-line summary.
+  - Pages are capped at {max_page_chars} characters. When a page is over the
+    cap, do not keep stuffing it: split a mature topic out into a new page
+    with write_page, then edit_section the original to remove the moved
+    content, leaving a [[wikilink]] and a one-line summary. The verifier
+    compares the total character count of every page you touched: merging
+    should only grow the total, and any removal needs an equal amount moved
+    somewhere else, or the whole batch is rolled back.
 
   Budget discipline: only read indexes and pages relevant to this article; no
-  unrelated exploration. Research should normally take 2-4 tool calls. One
+  unrelated exploration. Research should normally take 4-6 tool calls
+  (list_index, grep_pages for duplicates, outline_page, then read by section). One
   article usually deserves only 1-4 changes — merge the highest-value
   knowledge instead of porting the article section by section; converge
   before the edit budget (the tools report what is left) runs out, and call
