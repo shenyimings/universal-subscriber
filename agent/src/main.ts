@@ -4,7 +4,8 @@
  * 标记 compiled、重建索引。内循环（pi Agent）：模型自主读索引/读页/增量编辑/
  * 抓链接，直到调用 finish。终止由代码侧验证器决定，不采信模型自评。
  *
- * 用法：node src/main.ts [--limit N] [--max-turns N] [--dry-run] [--file <相对 wiki 目录的 pending 源路径>]
+ * 用法：node src/main.ts [--limit N] [--max-turns N] [--dry-run] [--verbose]
+ *      [--file <相对 wiki 目录的 pending 源路径>]
  */
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
@@ -80,10 +81,13 @@ async function compileSource(
 	maxChars: number,
 	maxTurns: number,
 	wikiDir: string,
+	configPath: string,
+	verbose: boolean,
 ): Promise<{ ok: boolean; ctx: CompileCtx; turns: number; cost: number; tokens: number }> {
 	const ctx: CompileCtx = {
 		root: ROOT,
 		wikiDir,
+		configPath,
 		touched: new Map<string, string>(),
 		edits: 0,
 		savedImages: [],
@@ -111,7 +115,16 @@ async function compileSource(
 			agent.abort();
 		}
 		if (event.type === "tool_execution_start") {
-			console.error(`  [turn ${turns}] ${event.toolName}`);
+			console.error(`  [turn ${turns}] ${event.toolName} ${verbose ? JSON.stringify(event.args ?? {}).slice(0, 300) : ""}`);
+		}
+		if (verbose && event.type === "message_end" && event.message.role === "assistant") {
+			const said = (event.message.content ?? [])
+				.filter((c: any) => c.type === "text")
+				.map((c: any) => c.text.trim())
+				.join("\n")
+				.trim();
+			if (said) console.error(`  [turn ${turns}] 说：${said}`);
+			if (event.message.stopReason) console.error(`  [turn ${turns}] stopReason=${event.message.stopReason}`);
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			cost += event.message.usage?.cost?.total ?? 0;
@@ -151,6 +164,7 @@ async function main(): Promise<void> {
 	const maxTurns = arg("--max-turns", 24);
 	const configPath = path.resolve(argStr("--config", path.join(ROOT, "config.yaml")));
 	const dryRun = process.argv.includes("--dry-run");
+	const verbose = process.argv.includes("--verbose");
 	const onlyFile = argStr("--file", "");
 
 	const envPath = path.join(ROOT, ".env");
@@ -192,7 +206,7 @@ async function main(): Promise<void> {
 		const name = path.basename(sourcePath);
 		console.error(`[wiki-agent ${i + 1}/${batch.length}] ${name}`);
 		const { ok, ctx, turns, cost, tokens } = await compileSource(
-			sourcePath, systemPrompt, model, maxChars, maxTurns, wikiDir,
+			sourcePath, systemPrompt, model, maxChars, maxTurns, wikiDir, configPath, verbose,
 		);
 		totalCost += cost;
 		totalTokens += tokens;
