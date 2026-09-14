@@ -171,10 +171,12 @@ wiki_agent: |
     verifier, and pasting the original external URL into the body is not an
     option either, because those links rot — that is the whole reason for
     saving it;
-  - Pages are capped at {max_page_chars} characters. When a page is over the
-    cap, do not keep stuffing it: split a mature topic out into a new page
-    with write_page, then edit_section the original to remove the moved
-    content, leaving a [[wikilink]] and a one-line summary. The verifier
+  - There is no hard page length limit; put content on the page it belongs
+    to. As a guideline keep pages under {max_page_chars} characters: when a
+    page grows long or a fairly self-contained topic has formed inside it,
+    you may split that topic out into a new page with write_page, then
+    edit_section the original to remove the moved content, leaving a
+    [[wikilink]] and a one-line summary. The verifier
     compares the total character count of every page you touched: merging
     should only grow the total, and any removal needs an equal amount moved
     somewhere else, or the whole batch is rolled back.

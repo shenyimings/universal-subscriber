@@ -16,8 +16,8 @@ export const CATEGORIES = [
 	"program-analysis",
 ];
 
-/** 单个页面的软上限；已有超限页面只许瘦身/拆分，不许继续膨胀。 */
-export const MAX_PAGE_CHARS = 40_000;
+/** 单页建议长度，只写进提示词供模型判断何时拆页；工具和验证器不据此拒绝。 */
+export const MAX_PAGE_CHARS = 100_000;
 
 const FRONT_RE = /^---\n([\s\S]*?)\n---\n?/;
 

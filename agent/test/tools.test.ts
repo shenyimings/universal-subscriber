@@ -156,15 +156,19 @@ test("insert_section 插入新节，落点被夹在保留段之前", async () =>
 	fs.rmSync(ctx.wikiDir, { recursive: true });
 });
 
-test("edit_section 拒绝让超限页面继续膨胀", async () => {
+test("超过建议长度的页面仍可继续编辑（只有软建议，没有硬拦截）", async () => {
 	const ctx = tmpCtx();
-	const big = `---\ndescription: 大页\ncategory: llm-systems\ntags:\n- fuzzing\n- llm-agent\n---\n## 甲\n${"填".repeat(41000)}\n`;
+	const big = `---\ndescription: 大页\ncategory: llm-systems\ntags:\n- fuzzing\n- llm-agent\n---\n## 甲\n唯一锚点\n${"填".repeat(101000)}\n`;
 	fs.writeFileSync(path.join(ctx.wikiDir, "pages", "big.md"), big);
-	await assert.rejects(
-		run(ctx, "edit_section", { file: "big.md", section: 1, content: `## 甲\n${"填".repeat(41100)}\n` }),
-		/不能再增长/,
+	assert.match(
+		await run(ctx, "edit_section", { file: "big.md", section: 1, content: `## 甲\n唯一锚点\n${"填".repeat(101100)}\n` }),
+		/已更新/,
 	);
-	assert.equal(ctx.touched.size, 0);
+	assert.match(
+		await run(ctx, "edit_page", { file: "big.md", old_string: "唯一锚点", new_string: "唯一锚点加了更多内容" }),
+		/已替换/,
+	);
+	assert.equal(ctx.touched.size, 1);
 	fs.rmSync(ctx.wikiDir, { recursive: true });
 });
 
@@ -195,24 +199,6 @@ test("grep_pages 做字面全文匹配，返回页面、行号与片段", async 
 	assert.doesNotMatch(hit, /b\.md/);
 
 	assert.match(await run(ctx, "grep_pages", { pattern: "从未写过的词" }), /无命中/);
-	fs.rmSync(ctx.wikiDir, { recursive: true });
-});
-
-test("edit_page 拒绝让超限页面继续膨胀，允许瘦身", async () => {
-	const ctx = tmpCtx();
-	const big = `---\ndescription: 大页\ncategory: llm-systems\ntags:\n- fuzzing\n- llm-agent\n---\n唯一锚点\n${"填".repeat(41000)}`;
-	fs.writeFileSync(path.join(ctx.wikiDir, "pages", "big.md"), big);
-
-	await assert.rejects(
-		run(ctx, "edit_page", { file: "big.md", old_string: "唯一锚点", new_string: "唯一锚点加了更多内容" }),
-		/不能再增长/,
-	);
-	// 增长被拒后页面未被改动、未记入 touched
-	assert.equal(fs.readFileSync(path.join(ctx.wikiDir, "pages", "big.md"), "utf-8"), big);
-	assert.equal(ctx.touched.size, 0);
-
-	const shrunk = await run(ctx, "edit_page", { file: "big.md", old_string: "唯一锚点", new_string: "锚" });
-	assert.match(shrunk, /已替换/);
 	fs.rmSync(ctx.wikiDir, { recursive: true });
 });
 

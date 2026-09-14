@@ -6,7 +6,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { IMG_DIR, MAX_PAGE_CHARS, validatePage } from "./wiki.ts";
+import { IMG_DIR, validatePage } from "./wiki.ts";
 
 /** 触碰过的页面允许总量下降的比例：正常合并只会增长，大跌意味着内容被整页洗掉。 */
 export const SHRINK_TOLERANCE = 0.05;
@@ -22,9 +22,6 @@ export function verifyTouched(wikiDir: string, touched: Map<string, string>): st
 		originalTotal += original.length;
 		currentTotal += content.length;
 		problems.push(...validatePage(file, content, wikiDir));
-		if (content.length > MAX_PAGE_CHARS && content.length > original.length) {
-			problems.push(`${file}: 页面 ${content.length} 字符，超过 ${MAX_PAGE_CHARS} 上限且仍在膨胀，请拆分`);
-		}
 	}
 	// 字符数守恒：按本次触碰的全部页面合计，拆分（内容迁到新页）因此仍能通过，
 	// 而「整页重写时丢掉没读到的小节」这类静默毁内容会被挡下。

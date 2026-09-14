@@ -14,7 +14,7 @@ import {
 	replaceSection,
 	splitSections,
 } from "./sections.ts";
-import { CATEGORIES, FILE_NAME_RE, MAX_PAGE_CHARS, validatePage } from "./wiki.ts";
+import { CATEGORIES, FILE_NAME_RE, validatePage } from "./wiki.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -83,16 +83,10 @@ function readPageFile(ctx: CompileCtx, file: string): string {
 }
 
 /**
- * 写盘的唯一入口：棘轮检查（超限页只许瘦身）、记录回滚点、落盘、跑页面校验。
+ * 写盘的唯一入口：记录回滚点、落盘、跑页面校验。
  * 所有写入类工具都走这里，别在工具里各写一遍。
  */
 function commitPage(ctx: CompileCtx, file: string, before: string, after: string, done: string) {
-	if (before.length > MAX_PAGE_CHARS && after.length > before.length) {
-		throw new Error(
-			`${file} 已超过 ${MAX_PAGE_CHARS} 字符上限，不能再增长；` +
-				"请把新内容放进拆分出的新页面（write_page），或先删减/迁出旧内容再合并",
-		);
-	}
 	recordTouch(ctx, file, before);
 	fs.writeFileSync(pagePath(ctx, file), after);
 	const note = spendEdit(ctx);
@@ -247,9 +241,6 @@ export function makeTools(ctx: CompileCtx): AgentTool<any>[] {
 				);
 			}
 			const originalBefore = exists ? fs.readFileSync(p, "utf-8") : "";
-			if (params.content.length > MAX_PAGE_CHARS) {
-				throw new Error(`内容超过 ${MAX_PAGE_CHARS} 字符上限，请精简或拆分`);
-			}
 			const problems = validatePage(params.file, params.content, ctx.wikiDir);
 			if (problems.length) throw new Error(`页面校验未通过：\n${problems.join("\n")}`);
 			recordTouch(ctx, params.file, originalBefore);
