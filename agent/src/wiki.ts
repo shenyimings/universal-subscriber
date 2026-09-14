@@ -99,6 +99,20 @@ export function appendSourceRef(wikiDir: string, pageFile: string, sourcePath: s
 	fs.writeFileSync(p, text);
 }
 
+/** 把页面 frontmatter 的 `updated` 设为 day（Hugo 用它当页面日期）。只改这一行，
+ * 不整体重写 frontmatter，免得 YAML 重新序列化带出无关 diff。 */
+export function stampUpdated(wikiDir: string, pageFile: string, day = new Date().toISOString().slice(0, 10)): void {
+	const p = path.join(wikiDir, "pages", pageFile);
+	if (!fs.existsSync(p)) return;
+	const text = fs.readFileSync(p, "utf-8");
+	const m = FRONT_RE.exec(text);
+	if (!m) return;
+	const front = /^updated:.*$/m.test(m[1])
+		? m[1].replace(/^updated:.*$/m, `updated: '${day}'`)
+		: `${m[1]}\nupdated: '${day}'`;
+	fs.writeFileSync(p, `---\n${front}\n---\n${text.slice(m[0].length)}`);
+}
+
 export function appendLog(wikiDir: string, action: string, detail: string): void {
 	const today = new Date().toISOString().slice(0, 10);
 	fs.appendFileSync(path.join(wikiDir, "log.md"), `## [${today}] ${action} | ${detail}\n`);

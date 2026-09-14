@@ -10,6 +10,7 @@ import {
 	parseFront,
 	pendingSources,
 	splitImageSection,
+	stampUpdated,
 	validatePage,
 } from "../src/wiki.ts";
 
@@ -175,4 +176,16 @@ test("图片段不受正文截断影响", () => {
 	const sliced = text.slice(0, 6000);
 	assert.equal(sliced.length, 6000);
 	assert.match(images, /a\.png/);
+});
+
+test("stampUpdated 补上或覆盖 updated，正文和其他字段不动", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-"));
+	fs.mkdirSync(path.join(dir, "pages"));
+	const p = path.join(dir, "pages", "p.md");
+	fs.writeFileSync(p, "---\ndescription: d\ntags:\n  - a\n---\n# T\n\nupdated: 正文里的不算\n");
+	stampUpdated(dir, "p.md", "2026-09-14");
+	assert.equal(fs.readFileSync(p, "utf-8"), "---\ndescription: d\ntags:\n  - a\nupdated: '2026-09-14'\n---\n# T\n\nupdated: 正文里的不算\n");
+	stampUpdated(dir, "p.md", "2026-09-15");
+	assert.match(fs.readFileSync(p, "utf-8"), /^---\ndescription: d\ntags:\n  - a\nupdated: '2026-09-15'\n---\n/);
+	assert.equal(parseFront(fs.readFileSync(p, "utf-8")).meta.updated, "2026-09-15");
 });

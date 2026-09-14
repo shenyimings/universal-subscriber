@@ -26,6 +26,7 @@ import {
 	parseFront,
 	pendingSources,
 	splitImageSection,
+	stampUpdated,
 } from "./wiki.ts";
 
 const execFileAsync = promisify(execFile);
@@ -212,7 +213,10 @@ async function main(): Promise<void> {
 		totalTokens += tokens;
 		const pages = [...ctx.touched.keys()];
 		if (ok) {
-			for (const f of pages) appendSourceRef(wikiDir, f, sourcePath);
+			for (const f of pages) {
+				appendSourceRef(wikiDir, f, sourcePath);
+				stampUpdated(wikiDir, f);
+			}
 			markCompiled(sourcePath, pages);
 			appendLog(wikiDir, "ingest", `${readSource(sourcePath, 80).title} -> ${pages.join(", ") || "(无沉淀)"}`);
 			try {
