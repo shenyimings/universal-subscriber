@@ -189,3 +189,17 @@ test("stampUpdated 补上或覆盖 updated，正文和其他字段不动", () =>
 	assert.match(fs.readFileSync(p, "utf-8"), /^---\ndescription: d\ntags:\n  - a\nupdated: '2026-09-15'\n---\n/);
 	assert.equal(parseFront(fs.readFileSync(p, "utf-8")).meta.updated, "2026-09-15");
 });
+
+test("pendingSources 优先源排最前，组内仍按 date", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wiki-"));
+	const src = path.join(dir, "sources", "2026", "09");
+	fs.mkdirSync(src, { recursive: true });
+	const mk = (name: string, source: string, date: string) =>
+		fs.writeFileSync(path.join(src, name), `---\ntitle: ${name}\nsource: ${source}\ndate: '${date}'\ncompiled: false\n---\n正文`);
+	mk("rss-old.md", "HN", "2026-09-01");
+	mk("inbox-new.md", "My Inbox", "2026-09-12");
+	mk("inbox-old.md", "My Inbox", "2026-09-07");
+	const names = (xs: string[]) => xs.map((p) => path.basename(p));
+	assert.deepEqual(names(pendingSources(dir, ["My Inbox"])), ["inbox-old.md", "inbox-new.md", "rss-old.md"]);
+	assert.deepEqual(names(pendingSources(dir)), ["rss-old.md", "inbox-old.md", "inbox-new.md"]);
+});

@@ -37,16 +37,19 @@ export function dumpFront(meta: Record<string, any>, body: string): string {
 	return `---\n${stringifyYaml(meta).trim()}\n---\n${body}`;
 }
 
-/** 未编译的归档源，按 frontmatter date 升序（与 Python pending_sources 一致）。 */
-export function pendingSources(wikiDir: string): string[] {
+/** 未编译的归档源，按 frontmatter date 升序（与 Python pending_sources 一致）。
+ * `source` 在 prioritySources 里的排在最前，组内仍按 date；Python 侧没有这个参数。 */
+export function pendingSources(wikiDir: string, prioritySources: string[] = []): string[] {
 	const sourcesDir = path.join(wikiDir, "sources");
 	if (!fs.existsSync(sourcesDir)) return [];
-	const files: { date: string; file: string }[] = [];
+	const files: { rank: number; date: string; file: string }[] = [];
 	for (const file of walkMd(sourcesDir).sort()) {
 		const { meta } = parseFront(fs.readFileSync(file, "utf-8"));
-		if (meta.compiled === false) files.push({ date: String(meta.date ?? ""), file });
+		if (meta.compiled !== false) continue;
+		const rank = prioritySources.includes(String(meta.source)) ? 0 : 1;
+		files.push({ rank, date: String(meta.date ?? ""), file });
 	}
-	files.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+	files.sort((a, b) => a.rank - b.rank || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 	return files.map((f) => f.file);
 }
 

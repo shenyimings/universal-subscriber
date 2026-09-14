@@ -186,7 +186,9 @@ async function main(): Promise<void> {
 		.replaceAll("{max_page_chars}", String(MAX_PAGE_CHARS))
 		.replaceAll("{image_budget}", String(IMAGE_BUDGET));
 
-	const pending = pendingSources(wikiDir);
+	// 手动转发进收件箱的是主动挑过的，先于订阅源编译
+	const inboxNames = (cfg.sources ?? []).filter((s: any) => s.type === "inbox").map((s: any) => String(s.name));
+	const pending = pendingSources(wikiDir, inboxNames);
 	let batch = pending.slice(0, limit);
 	if (onlyFile) {
 		const target = path.resolve(wikiDir, onlyFile);
