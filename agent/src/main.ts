@@ -12,10 +12,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { Agent } from "@earendil-works/pi-agent-core";
-import { createModels } from "@earendil-works/pi-ai";
-import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { parse as parseYaml } from "yaml";
 import { pruneContext } from "./context.ts";
+import { type LlmSettings, llmSettings, resolveModel } from "./llm.ts";
 import { type CompileCtx, IMAGE_BUDGET, makeTools, UV_BIN } from "./tools.ts";
 import { rollbackTouched, verifyTouched } from "./verify.ts";
 import {
@@ -78,6 +77,7 @@ async function compileSource(
 	sourcePath: string,
 	systemPrompt: string,
 	model: any,
+	llm: LlmSettings,
 	maxChars: number,
 	maxTurns: number,
 	wikiDir: string,
@@ -95,7 +95,9 @@ async function compileSource(
 		summary: "",
 	};
 	const agent = new Agent({
-		initialState: { systemPrompt, model, tools: makeTools(ctx) },
+		initialState: { systemPrompt, model, thinkingLevel: llm.reasoning_effort ?? "off", tools: makeTools(ctx) },
+		// api_key_env 优先；未配置时交回 provider 自己的默认环境变量（DEEPSEEK_API_KEY 等）
+		getApiKey: () => (llm.api_key_env ? process.env[llm.api_key_env] : undefined),
 		transformContext: async (messages) => pruneContext(messages),
 		afterToolCall: async ({ toolCall, result, isError }) => {
 			if (isError) {
@@ -174,10 +176,8 @@ async function main(): Promise<void> {
 	const prompts = parseYaml(fs.readFileSync(path.join(ROOT, "prompts.yaml"), "utf-8"));
 	const wikiDir = path.resolve(path.dirname(configPath), cfg.wiki?.dir ?? "wiki");
 	const maxChars = cfg.limits?.max_chars_per_item ?? 6000;
-	const models = createModels();
-	models.setProvider(deepseekProvider());
-	const model = models.getModel("deepseek", cfg.llm.wiki_model ?? cfg.llm.model);
-	if (!model) throw new Error(`pi-ai 不认识模型 ${cfg.llm.wiki_model ?? cfg.llm.model}`);
+	const llm = llmSettings(cfg);
+	const model = resolveModel(llm);
 
 	const systemPrompt = String(prompts.wiki_agent)
 		.replaceAll("{persona}", String(prompts.persona).trim())
@@ -206,7 +206,7 @@ async function main(): Promise<void> {
 		const name = path.basename(sourcePath);
 		console.error(`[wiki-agent ${i + 1}/${batch.length}] ${name}`);
 		const { ok, ctx, turns, cost, tokens } = await compileSource(
-			sourcePath, systemPrompt, model, maxChars, maxTurns, wikiDir, configPath, verbose,
+			sourcePath, systemPrompt, model, llm, maxChars, maxTurns, wikiDir, configPath, verbose,
 		);
 		totalCost += cost;
 		totalTokens += tokens;

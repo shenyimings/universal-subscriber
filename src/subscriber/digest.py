@@ -4,6 +4,7 @@ Prompt templates live in prompts.yaml so they can be edited without touching cod
 """
 
 import os
+import platform
 import sys
 from datetime import date
 
@@ -17,11 +18,45 @@ from .fetch import Update
 MIN_ARTICLE_CHARS = 200
 
 
+def llm_settings(cfg: dict) -> dict:
+    """Flatten `llm.profiles[llm.provider]` into one dict.
+
+    A config without `profiles` is returned unchanged, so the old flat
+    layout (base_url/model/... directly under `llm`) keeps working.
+    """
+    llm = cfg["llm"]
+    if "profiles" not in llm:
+        return llm
+    provider = llm["provider"]
+    return {"provider": provider, **llm["profiles"][provider]}
+
+
+def pi_user_agent() -> str:
+    """Same string pi-ai's getPiUserAgent() sends, e.g. `pi (linux 6.8.0; x64)`.
+
+    The GLM coding-plan key is issued for Pi Coding Agent; this is the only
+    client marker pi puts on its zai-coding-cn requests.
+    """
+    arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64"}.get(
+        platform.machine().lower(), platform.machine().lower()
+    )
+    return f"pi ({sys.platform} {platform.release()}; {arch})"
+
+
 def _client(llm_cfg: dict) -> OpenAI:
     api_key = os.environ.get(llm_cfg.get("api_key_env", "DEEPSEEK_API_KEY"))
     if not api_key:
         raise RuntimeError(f"环境变量 {llm_cfg.get('api_key_env')} 未设置")
-    return OpenAI(api_key=api_key, base_url=llm_cfg["base_url"])
+    headers = None
+    if llm_cfg.get("provider") == "zai-coding-cn":
+        headers = {"User-Agent": pi_user_agent()}
+    return OpenAI(api_key=api_key, base_url=llm_cfg["base_url"], default_headers=headers)
+
+
+def effort_kwargs(llm_cfg: dict) -> dict:
+    """`reasoning_effort` for the request, only when the profile sets one."""
+    effort = llm_cfg.get("reasoning_effort")
+    return {"reasoning_effort": effort} if effort else {}
 
 
 def summarize(
@@ -40,6 +75,7 @@ def summarize(
         model=llm_cfg["model"],
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
+        **effort_kwargs(llm_cfg),
     )
     text = (resp.choices[0].message.content or "").strip()
     if not text or text.splitlines()[0].strip().upper().startswith("SKIP"):

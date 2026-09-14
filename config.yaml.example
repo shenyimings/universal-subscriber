@@ -5,10 +5,21 @@
 #   browser - render a JS page via Obscura, then diff like `page`
 
 llm:
-  base_url: https://api.deepseek.com
-  model: deepseek-chat           # used for the daily digest (simple task, cheap model is fine)
-  wiki_model: deepseek-reasoner  # used for wiki compilation (merging/dedup needs more reasoning); falls back to `model` if omitted
-  api_key_env: DEEPSEEK_API_KEY
+  provider: deepseek   # which profile below is active: deepseek | zai-coding-cn
+  profiles:
+    deepseek:
+      base_url: https://api.deepseek.com
+      api_key_env: DEEPSEEK_API_KEY
+      model: deepseek-chat           # used for the daily digest (simple task, cheap model is fine)
+      wiki_model: deepseek-reasoner  # used for wiki compilation; falls back to `model` if omitted
+    zai-coding-cn:
+      # GLM coding plan. Requests carry pi's User-Agent, since coding-plan keys
+      # can be restricted to Pi Coding Agent.
+      base_url: https://open.bigmodel.cn/api/coding/paas/v4
+      api_key_env: GLM_API_KEY
+      model: glm-5.3
+      wiki_model: glm-5.3
+      reasoning_effort: low  # ingest and wiki agent; glm-5.3 cannot turn thinking off (low/high/max)
 
 email:
   to: you@example.com

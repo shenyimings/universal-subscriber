@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 
 from .archive import archive_update
-from .digest import build_digest
+from .digest import build_digest, llm_settings
 from .fetch import fetch_source
 from .state import State
 
@@ -64,6 +64,7 @@ def main() -> None:
     root = config_path.parent
     load_env(root / ".env")
     cfg = yaml.safe_load(config_path.read_text())
+    cfg["llm"] = llm_settings(cfg)
     prompts = yaml.safe_load((root / "prompts.yaml").read_text())
 
     state = State(root / "data" / "state.db")

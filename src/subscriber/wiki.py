@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from .digest import _client
+from .digest import _client, effort_kwargs
 from .images import IMG_DIR
 
 _FRONT_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
@@ -141,6 +141,7 @@ def _chat(llm_cfg: dict, prompt: str) -> str:
         model=llm_cfg.get("wiki_model", llm_cfg["model"]),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
+        **effort_kwargs(llm_cfg),
     )
     return (resp.choices[0].message.content or "").strip()
 

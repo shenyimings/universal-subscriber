@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from subscriber.digest import MIN_ARTICLE_CHARS, build_digest, summarize
+from subscriber.digest import MIN_ARTICLE_CHARS, _client, build_digest, llm_settings, summarize
 from subscriber.fetch import Update
 
 
@@ -126,3 +126,28 @@ class TestBuildDigest:
         """The floor is for articles only — a one-line page diff is real."""
         u = _make_update(kind="page_change", content="+ tiny diff")
         assert build_digest([u], LLM_CFG, PROMPTS, max_chars=1000) is not None
+
+
+class TestLlmSettings:
+    def test_flat_config_unchanged(self):
+        assert llm_settings({"llm": LLM_CFG}) is LLM_CFG
+
+    def test_active_profile_flattened(self):
+        cfg = {"llm": {"provider": "b", "profiles": {"a": {"model": "ma"}, "b": {"model": "mb"}}}}
+        assert llm_settings(cfg) == {"provider": "b", "model": "mb"}
+
+    def test_zai_client_sends_pi_user_agent(self, monkeypatch):
+        monkeypatch.setenv("TEST_KEY", "k")
+        client = _client({**LLM_CFG, "provider": "zai-coding-cn"})
+        assert client._custom_headers["User-Agent"].startswith("pi (")
+        assert "User-Agent" not in _client(LLM_CFG)._custom_headers
+
+    def test_reasoning_effort_passed_only_when_set(self, monkeypatch):
+        monkeypatch.setenv("TEST_KEY", "k")
+        with patch("subscriber.digest._client") as mock_client_fn:
+            create = mock_client_fn.return_value.chat.completions.create
+            create.return_value = _mock_openai_response("摘要")
+            summarize(_make_update(), LLM_CFG, PROMPTS, 1000)
+            assert "reasoning_effort" not in create.call_args.kwargs
+            summarize(_make_update(), {**LLM_CFG, "reasoning_effort": "low"}, PROMPTS, 1000)
+            assert create.call_args.kwargs["reasoning_effort"] == "low"
