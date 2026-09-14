@@ -115,6 +115,15 @@ test("insertSection 不会插到保留段之后，位置被夹到保留段之前
 	);
 });
 
+test("insertSection 剥掉正文里重复的标题行，不同标题的子标题保留", () => {
+	const dup = insertSection(PAGE, 2, "新增小节", "## 新增小节\n\n新增正文。").content;
+	assert.equal(dup.match(/## 新增小节/g)?.length, 1);
+	const hashed = insertSection(PAGE, 2, "## 新增小节", "新增正文。").content;
+	assert.match(hashed, /\n## 新增小节\n\n新增正文。/);
+	const other = insertSection(PAGE, 2, "新增小节", "## 别的\n正文").content;
+	assert.match(other, /## 新增小节\n\n## 别的/);
+});
+
 test("isReserved 认得代码维护的保留段", () => {
 	assert.equal(isReserved("## 来源"), true);
 	assert.equal(isReserved("## 图片"), true);
