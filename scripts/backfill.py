@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from subscriber import load_env  # noqa: E402
 from subscriber.archive import archive_update  # noqa: E402
-from subscriber.digest import summarize  # noqa: E402
+from subscriber.digest import llm_settings, summarize  # noqa: E402
 from subscriber.fetch import Update, extract_text, http_get  # noqa: E402
 
 
@@ -106,7 +106,7 @@ def main() -> None:
     load_env(root / ".env")
     cfg = yaml.safe_load((root / "config.yaml").read_text())
     prompts = yaml.safe_load((root / "prompts.yaml").read_text())
-    llm_cfg = cfg["llm"]
+    llm_cfg = llm_settings(cfg)
     max_chars = cfg.get("limits", {}).get("max_chars_per_item", 6000)
     wiki_dir = root / cfg.get("wiki", {}).get("dir", "wiki")
 

@@ -129,6 +129,9 @@ export function insertSection(
 	title: string,
 	body: string,
 ): { content: string; at: number } {
+	// 模型常把标题行也塞进正文（实测 glm-5.3），不剥掉就会出现两个一样的 ## 标题
+	title = title.trim().replace(/^#+\s*/, "");
+	body = body.replace(/^\s*#{2,}\s*(.*)\n/, (line, t: string) => (t.trim() === title ? "" : line));
 	const secs = splitSections(content);
 	if (!secs.length) {
 		const front = FRONT_RE.exec(content);
